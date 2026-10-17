@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Banner provvisorio per il launcher Android TV (formato 16:9, 320x180 dp).
+     Da sostituire con il banner grafico definitivo (PNG 320x180 in res/drawable-xhdpi). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="320dp"
+    android:height="180dp"
+    android:viewportWidth="320"
+    android:viewportHeight="180">
+
+    <!-- Sfondo -->
+    <path
+        android:fillColor="#FF1B2A41"
+        android:pathData="M0,0h320v180h-320z" />
+
+    <!-- Icona schermo -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="8"
+        android:pathData="M110,50h100v62h-100z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M140,124h40v8h-40z" />
+
+    <!-- Onde di trasmissione -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FF4FC3F7"
+        android:strokeWidth="6"
+        android:pathData="M145,96a15,15 0,0 1,30 0" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FF4FC3F7"
+        android:strokeWidth="6"
+        android:pathData="M132,96a28,28 0,0 1,56 0" />
+</vector>

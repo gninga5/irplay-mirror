@@ -1,0 +1,4 @@
+[submodule "app/src/main/cpp/third_party/mbedtls"]
+	path = app/src/main/cpp/third_party/mbedtls
+	url = https://github.com/Mbed-TLS/mbedtls.git
+	branch = mbedtls-3.6

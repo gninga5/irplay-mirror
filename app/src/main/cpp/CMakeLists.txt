@@ -45,7 +45,8 @@ target_compile_options(playfair PRIVATE -w)   # codice upstream: i warning vanno
 
 # --- Libreria IcAst ---------------------------------------------------------------
 add_library(${CMAKE_PROJECT_NAME} SHARED
-        jni_bridge.cpp)
+        jni_bridge.cpp
+        airplay_server.cpp)
 
 # Hardening: questo codice legge pacchetti da una rete non fidata (la LAN).
 target_compile_options(${CMAKE_PROJECT_NAME} PRIVATE

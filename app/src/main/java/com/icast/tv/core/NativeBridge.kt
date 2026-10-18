@@ -18,4 +18,12 @@ object NativeBridge {
      */
     @JvmStatic
     external fun ed25519PublicKey(seed: ByteArray): ByteArray?
+
+    /** Avvia il server RTSP. Restituisce la porta reale (che va annunciata via mDNS) oppure -1. */
+    @JvmStatic
+    external fun startServer(preferredPort: Int): Int
+
+    /** Ferma il server e chiude tutte le connessioni. Idempotente. */
+    @JvmStatic
+    external fun stopServer()
 }

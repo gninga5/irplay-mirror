@@ -3,8 +3,36 @@
 #include <android/log.h>
 #include <sodium.h>
 #include <mbedtls/version.h>
+#include <memory>
+#include <mutex>
+#include "airplay_server.h"
+
+namespace {
+    std::mutex gServerMutex;                       // start e stop possono arrivare da thread Kotlin diversi
+    std::unique_ptr<icast::AirPlayServer> gServer;
+}
+
 extern "C" {
-#include "playfair.h"   // header C senza extern "C": va racchiuso qui
+#include "playfair.h"
+
+JNIEXPORT jint JNICALL
+Java_com_icast_tv_core_NativeBridge_startServer(JNIEnv*, jclass, jint preferredPort) {
+    if (preferredPort < 0 || preferredPort > 65535) return -1;
+    std::lock_guard<std::mutex> lock(gServerMutex);
+    if (gServer) gServer->stop();
+    gServer = std::make_unique<icast::AirPlayServer>();
+    return gServer->start(static_cast<uint16_t>(preferredPort));
+}
+
+JNIEXPORT void JNICALL
+Java_com_icast_tv_core_NativeBridge_stopServer(JNIEnv*, jclass) {
+    std::lock_guard<std::mutex> lock(gServerMutex);
+    if (gServer) {
+        gServer->stop();
+        gServer.reset();
+    }
+}
+
 }
 
 #define TAG "IcAst_NativeBridge"

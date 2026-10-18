@@ -67,7 +67,14 @@ class AirPlayService : Service() {
                     stopSelf()
                     return@launch
                 }
-                registerServices(identity)
+
+                val rtspPort = withContext(Dispatchers.IO) { NativeBridge.startServer(PREFERRED_RTSP_PORT) }
+                if (rtspPort <= 0) {
+                    Log.e(TAG, "Server RTSP non avviato, servizio fermato")
+                    stopSelf()
+                    return@launch
+                }
+                registerServices(identity, rtspPort)
             }
         }
         return START_STICKY
@@ -80,6 +87,7 @@ class AirPlayService : Service() {
             registrations.forEach { runCatching { n.unregisterService(it) } }
         }
         registrations.clear()
+        NativeBridge.stopServer()     // prima si ritira l'annuncio, poi si chiudono le connessioni
         multicastLock?.takeIf { it.isHeld }?.release()
         multicastLock = null
         super.onDestroy()
@@ -117,14 +125,14 @@ class AirPlayService : Service() {
         }
     }
 
-    private fun registerServices(id: DeviceIdentity) {
+    private fun registerServices(id: DeviceIdentity, rtspPort: Int) {
         val manager = getSystemService(NsdManager::class.java) ?: return
         nsd = manager
 
         val airplay = NsdServiceInfo().apply {
             serviceName = DEVICE_NAME
             serviceType = "_airplay._tcp"
-            port = RTSP_PORT
+            port = rtspPort
             setAttribute("deviceid", id.deviceId)   // identità stabile del ricevitore
             setAttribute("features", FEATURES)      // bitmask delle funzioni supportate (vedi sotto)
             setAttribute("flags", "0x84")
@@ -138,7 +146,7 @@ class AirPlayService : Service() {
         val raop = NsdServiceInfo().apply {
             serviceName = "${id.raopPrefix}@$DEVICE_NAME"
             serviceType = "_raop._tcp"
-            port = RTSP_PORT
+            port = rtspPort
             mapOf(
                 "txtvers" to "1",
                 "ch" to "2",            // canali audio
@@ -193,7 +201,7 @@ class AirPlayService : Service() {
         private const val NOTIFICATION_ID = 1
 
         private const val DEVICE_NAME = "IcAst"
-        const val RTSP_PORT = 7000
+        private const val PREFERRED_RTSP_PORT = 7000
 
         // Feature flags di un ricevitore per mirroring dello schermo (gli stessi di UxPlay).
         // Il bit 27 ("legacy pairing") è attivo: fa usare a iOS il pair-setup/verify

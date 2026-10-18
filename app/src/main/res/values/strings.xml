@@ -1,3 +1,5 @@
 <resources>
     <string name="app_name">IcAst</string>
+    <string name="receiver_channel_name">Ricevitore attivo</string>
+    <string name="receiver_waiting">In attesa di iPhone o iPad sulla rete locale</string>
 </resources>

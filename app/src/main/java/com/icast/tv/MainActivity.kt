@@ -11,17 +11,11 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
-
         binding.sampleText.text = stringFromJNI()
-        // TEST Fase 1C (da rimuovere): il Keystore non va usato dal main thread.
-        Thread {
-            val id = com.icast.tv.core.DeviceIdentity.loadOrCreate(applicationContext)
-            val info = "deviceid ${id.deviceId}\npi ${id.pairingId}\npk ${id.publicKeyHex.take(16)}…"
-            runOnUiThread { binding.sampleText.text = info }
-        }.start()
+
+        com.icast.tv.core.AirPlayService.start(this)
     }
 
     /**

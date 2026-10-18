@@ -34,4 +34,31 @@ Java_com_icast_tv_MainActivity_stringFromJNI(JNIEnv* env, jobject /* this */) {
     return env->NewStringUTF(buf);
 }
 
+
+// Calcola la chiave pubblica Ed25519 dal seed (RFC 8032), senza conservare il segreto.
+// Seed e chiave privata espansa vengono azzerati con sodium_memzero, che il
+// compilatore non può eliminare in ottimizzazione (al contrario di memset su un
+// buffer che non viene più letto).
+JNIEXPORT jbyteArray JNICALL
+Java_com_icast_tv_core_NativeBridge_ed25519PublicKey(JNIEnv* env, jclass, jbyteArray seed) {
+    if (seed == nullptr || env->GetArrayLength(seed) != crypto_sign_SEEDBYTES) return nullptr;
+    if (sodium_init() < 0) return nullptr;
+
+    unsigned char s[crypto_sign_SEEDBYTES];
+    unsigned char pk[crypto_sign_PUBLICKEYBYTES];
+    unsigned char sk[crypto_sign_SECRETKEYBYTES];
+    env->GetByteArrayRegion(seed, 0, crypto_sign_SEEDBYTES, reinterpret_cast<jbyte*>(s));
+
+    const int rc = crypto_sign_seed_keypair(pk, sk, s);
+    sodium_memzero(s, sizeof s);
+    sodium_memzero(sk, sizeof sk);
+    if (rc != 0) return nullptr;
+
+    jbyteArray out = env->NewByteArray(crypto_sign_PUBLICKEYBYTES);
+    if (out != nullptr) {
+        env->SetByteArrayRegion(out, 0, crypto_sign_PUBLICKEYBYTES, reinterpret_cast<const jbyte*>(pk));
+    }
+    return out;
+}
+
 }

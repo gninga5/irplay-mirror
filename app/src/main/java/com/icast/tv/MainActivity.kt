@@ -15,8 +15,13 @@ class MainActivity : AppCompatActivity() {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        // Example of a call to a native method
         binding.sampleText.text = stringFromJNI()
+        // TEST Fase 1C (da rimuovere): il Keystore non va usato dal main thread.
+        Thread {
+            val id = com.icast.tv.core.DeviceIdentity.loadOrCreate(applicationContext)
+            val info = "deviceid ${id.deviceId}\npi ${id.pairingId}\npk ${id.publicKeyHex.take(16)}…"
+            runOnUiThread { binding.sampleText.text = info }
+        }.start()
     }
 
     /**

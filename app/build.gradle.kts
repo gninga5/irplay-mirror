@@ -33,6 +33,22 @@ android {
         }
     }
 
+    // Firma delle release pubblicate. Chiave e password NON sono nel repository: stanno in
+    // ~/.gradle/gradle.properties (IRPLAY_STORE_FILE, IRPLAY_STORE_PASSWORD, IRPLAY_KEY_ALIAS,
+    // IRPLAY_KEY_PASSWORD). Senza, la release è firmata con la chiave di debug (solo per test).
+    val releaseStore = providers.gradleProperty("IRPLAY_STORE_FILE").orNull?.let { file(it) }
+    signingConfigs {
+        if (releaseStore != null && releaseStore.exists()) {
+            create("release") {
+                storeFile = releaseStore
+                storePassword = providers.gradleProperty("IRPLAY_STORE_PASSWORD").get()
+                keyAlias = providers.gradleProperty("IRPLAY_KEY_ALIAS").get()
+                keyPassword = providers.gradleProperty("IRPLAY_KEY_PASSWORD").get()
+                storeType = "pkcs12"
+            }
+        }
+    }
+
     buildTypes {
         release {
             // Ottimizzazione e offuscamento con R8 per performance stabili sulla TV
@@ -40,7 +56,7 @@ android {
             isShrinkResources = true
             // Le regole del progetto stanno in src/main/keepRules/rules.keep (lette da AGP in automatico).
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
         }
         debug {
             isMinifyEnabled = false

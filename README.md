@@ -40,8 +40,15 @@ RPiPlay. La catena delle chiavi è descritta in `app/src/main/cpp/airplay_crypto
    La build Gradle usa `GEN_FILES=OFF` e non dipende da Python.
 3. libsodium è in `app/libs/libsodium-1.0.22.0.aar` (Prefab), compilato con
    `dist-build/android-aar.sh` dai sorgenti ufficiali con firma minisign verificata.
-4. `./gradlew :app:assembleRelease` → `app/build/outputs/apk/release/app-release.apk`
-   (firmato con la chiave di debug: va bene per l'installazione manuale, non per il Play Store).
+4. `./gradlew :app:assembleRelease` → `app/build/outputs/apk/release/app-release.apk`.
+   Per firmare con una chiave propria, definire in `~/.gradle/gradle.properties` (mai nel
+   repository) `IRPLAY_STORE_FILE`, `IRPLAY_STORE_PASSWORD`, `IRPLAY_KEY_ALIAS`,
+   `IRPLAY_KEY_PASSWORD`; senza, l'APK è firmato con la chiave di debug (solo per test).
+
+## Download
+
+L'APK firmato di ogni versione è nella pagina
+[Releases](https://github.com/gninga5/irplay-mirror/releases).
 
 ## Test
 

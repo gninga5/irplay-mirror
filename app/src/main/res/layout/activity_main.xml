@@ -90,82 +90,138 @@
             android:layout_weight="1"
             android:orientation="horizontal">
 
+            <!-- Dati del ricevitore: tre righe con la stessa struttura (icona, etichetta, valore) e lo
+                 stesso rientro, così restano allineate. La prima è selezionabile (OK = rinomina): il
+                 suo bordo di focus usa lo stesso spazio interno delle altre, senza spostare il testo. -->
             <LinearLayout
                 android:layout_width="0dp"
                 android:layout_height="match_parent"
                 android:layout_weight="1"
                 android:background="@drawable/bg_card"
-                android:clipToPadding="false"
+                android:gravity="center_vertical"
                 android:orientation="vertical"
-                android:padding="24dp">
+                android:paddingHorizontal="12dp"
+                android:paddingVertical="16dp">
 
-                <!-- Nome della TV: selezionabile col D-pad, OK apre la finestra per cambiarlo.
-                     Margini laterali negativi: il bordo di focus sporge senza spostare il testo
-                     (la scheda ha clipToPadding=false, altrimenti verrebbe tagliato). -->
                 <LinearLayout
-                    android:id="@+id/name_row"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginHorizontal="-12dp"
+                    android:id="@+id/name_row"
                     android:background="@drawable/bg_focusable_subtle"
                     android:clickable="true"
                     android:focusable="true"
-                    android:orientation="vertical"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal"
                     android:paddingHorizontal="12dp"
                     android:paddingVertical="8dp">
 
-                    <TextView
-                        style="@style/iRPlay.Label"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="@string/label_tv_name" />
+                    <ImageView
+                        android:id="@+id/name_icon"
+                        style="@style/iRPlay.RowIcon"
+                        android:src="@drawable/ic_tv" />
 
-                    <TextView
-                        android:id="@+id/receiver_name"
-                        style="@style/iRPlay.Value"
-                        android:layout_width="match_parent"
+                    <LinearLayout
+                        android:layout_width="0dp"
                         android:layout_height="wrap_content"
-                        android:layout_marginTop="4dp"
-                        android:ellipsize="end"
-                        android:maxLines="1" />
+                        android:layout_marginStart="16dp"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
 
-                    <TextView
-                        style="@style/iRPlay.Secondary"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="2dp"
-                        android:text="@string/rename_hint"
-                        android:textColor="@color/text_muted"
-                        android:textSize="12sp" />
+                        <TextView
+                            style="@style/iRPlay.Label"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="@string/label_tv_name" />
+
+                        <TextView
+                            android:id="@+id/receiver_name"
+                            style="@style/iRPlay.Value"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="2dp"
+                            android:ellipsize="end"
+                            android:maxLines="1" />
+
+                        <TextView
+                            style="@style/iRPlay.Secondary"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="2dp"
+                            android:text="@string/rename_hint"
+                            android:textColor="@color/text_muted"
+                            android:textSize="12sp" />
+                    </LinearLayout>
                 </LinearLayout>
 
-                <TextView
-                    style="@style/iRPlay.Label"
-                    android:layout_width="wrap_content"
+                <LinearLayout
+                    android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="12dp"
-                    android:text="@string/label_ip" />
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal"
+                    android:paddingHorizontal="12dp"
+                    android:paddingVertical="8dp">
 
-                <TextView
-                    android:id="@+id/ip_address"
-                    style="@style/iRPlay.Value"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="4dp" />
+                    <ImageView
+                        android:id="@+id/ip_icon"
+                        style="@style/iRPlay.RowIcon"
+                        android:src="@drawable/ic_ethernet" />
 
-                <TextView
-                    style="@style/iRPlay.Label"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="20dp"
-                    android:text="@string/label_status" />
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="16dp"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
 
-                <TextView
-                    android:id="@+id/status"
-                    style="@style/iRPlay.Body"
-                    android:layout_width="wrap_content"
+                        <TextView
+                            style="@style/iRPlay.Label"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="@string/label_ip" />
+
+                        <TextView
+                            android:id="@+id/ip_address"
+                            style="@style/iRPlay.Value"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="2dp" />
+                    </LinearLayout>
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="4dp" />
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal"
+                    android:paddingHorizontal="12dp"
+                    android:paddingVertical="8dp">
+
+                    <ImageView
+                        android:id="@+id/status_icon"
+                        style="@style/iRPlay.RowIcon"
+                        android:src="@drawable/ic_status" />
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="16dp"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+
+                        <TextView
+                            style="@style/iRPlay.Label"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="@string/label_status" />
+
+                        <TextView
+                            android:id="@+id/status"
+                            style="@style/iRPlay.Body"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="2dp" />
+                    </LinearLayout>
+                </LinearLayout>
             </LinearLayout>
 
             <LinearLayout
@@ -266,7 +322,7 @@
                 android:id="@+id/auto_open_row"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
-                android:layout_weight="1.25"
+                android:layout_weight="1.2"
                 android:background="@drawable/bg_focusable"
                 android:clickable="true"
                 android:focusable="true"
@@ -277,9 +333,14 @@
 
                 <requestFocus />
 
+                <ImageView
+                    style="@style/iRPlay.TileIcon"
+                    android:src="@drawable/ic_open_auto" />
+
                 <LinearLayout
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
+                    android:layout_marginStart="14dp"
                     android:layout_weight="1"
                     android:orientation="vertical">
 
@@ -287,27 +348,22 @@
                         style="@style/iRPlay.Heading"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
+                        android:ellipsize="end"
+                        android:maxLines="1"
                         android:text="@string/auto_open_title"
-                        android:textSize="16sp" />
+                        android:textSize="15sp" />
 
                     <TextView
                         android:id="@+id/auto_open_summary"
                         style="@style/iRPlay.Secondary"
+                        android:ellipsize="end"
+                        android:maxLines="1"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:layout_marginTop="2dp"
                         android:textSize="13sp" />
                 </LinearLayout>
 
-                <!-- Non focalizzabile: si attiva premendo OK sull'intera riga. -->
-                <com.google.android.material.switchmaterial.SwitchMaterial
-                    android:id="@+id/auto_open_switch"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginStart="16dp"
-                    android:clickable="false"
-                    android:focusable="false"
-                    android:importantForAccessibility="no" />
             </LinearLayout>
 
             <LinearLayout
@@ -320,24 +376,40 @@
                 android:clickable="true"
                 android:focusable="true"
                 android:gravity="center_vertical"
-                android:orientation="vertical"
-                android:paddingHorizontal="20dp"
+                android:orientation="horizontal"
+                android:paddingHorizontal="18dp"
                 android:paddingVertical="12dp">
 
-                <TextView
-                    style="@style/iRPlay.Heading"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="@string/pin_title"
-                    android:textSize="16sp" />
+                <ImageView
+                    style="@style/iRPlay.TileIcon"
+                    android:src="@drawable/ic_lock" />
 
-                <TextView
-                    android:id="@+id/pin_summary"
-                    style="@style/iRPlay.Secondary"
-                    android:layout_width="wrap_content"
+                <LinearLayout
+                    android:layout_width="0dp"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="2dp"
-                    android:textSize="13sp" />
+                    android:layout_marginStart="14dp"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+
+                    <TextView
+                        style="@style/iRPlay.Heading"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:ellipsize="end"
+                        android:maxLines="1"
+                        android:text="@string/pin_title"
+                        android:textSize="15sp" />
+
+                    <TextView
+                        android:id="@+id/pin_summary"
+                        style="@style/iRPlay.Secondary"
+                        android:ellipsize="end"
+                        android:maxLines="1"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="2dp"
+                        android:textSize="13sp" />
+                </LinearLayout>
             </LinearLayout>
 
             <LinearLayout
@@ -345,34 +417,49 @@
                 android:layout_width="0dp"
                 android:layout_height="match_parent"
                 android:layout_marginStart="16dp"
-                android:layout_weight="1"
+                android:layout_weight="1.1"
                 android:background="@drawable/bg_focusable"
                 android:clickable="true"
                 android:focusable="true"
                 android:gravity="center_vertical"
-                android:orientation="vertical"
-                android:paddingHorizontal="20dp"
+                android:orientation="horizontal"
+                android:paddingHorizontal="18dp"
                 android:paddingVertical="12dp">
 
-                <TextView
-                    style="@style/iRPlay.Heading"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="@string/lyrics_title"
-                    android:textSize="16sp" />
+                <ImageView
+                    style="@style/iRPlay.TileIcon"
+                    android:src="@drawable/ic_lyrics" />
 
-                <TextView
-                    android:id="@+id/lyrics_summary"
-                    style="@style/iRPlay.Secondary"
-                    android:layout_width="wrap_content"
+                <LinearLayout
+                    android:layout_width="0dp"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="2dp"
-                    android:textSize="13sp" />
+                    android:layout_marginStart="14dp"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+
+                    <TextView
+                        style="@style/iRPlay.Heading"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:ellipsize="end"
+                        android:maxLines="1"
+                        android:text="@string/lyrics_title"
+                        android:textSize="15sp" />
+
+                    <TextView
+                        android:id="@+id/lyrics_summary"
+                        style="@style/iRPlay.Secondary"
+                        android:ellipsize="end"
+                        android:maxLines="1"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="2dp"
+                        android:textSize="13sp" />
+                </LinearLayout>
             </LinearLayout>
 
-            <TextView
+            <LinearLayout
                 android:id="@+id/licenses_button"
-                style="@style/iRPlay.Heading"
                 android:layout_width="wrap_content"
                 android:layout_height="match_parent"
                 android:layout_marginStart="16dp"
@@ -380,9 +467,21 @@
                 android:clickable="true"
                 android:focusable="true"
                 android:gravity="center"
-                android:paddingHorizontal="28dp"
-                android:text="@string/licenses_button"
-                android:textSize="16sp" />
+                android:orientation="vertical"
+                android:paddingHorizontal="24dp">
+
+                <ImageView
+                    style="@style/iRPlay.TileIcon"
+                    android:src="@drawable/ic_licenses" />
+
+                <TextView
+                    style="@style/iRPlay.Heading"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text="@string/licenses_button"
+                    android:textSize="15sp" />
+            </LinearLayout>
         </LinearLayout>
     </LinearLayout>
     <!-- In riproduzione: la TV fa da altoparlante (musica, podcast). Nessun elemento

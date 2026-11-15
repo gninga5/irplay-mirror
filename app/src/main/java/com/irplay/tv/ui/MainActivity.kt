@@ -107,9 +107,12 @@ class MainActivity : AppCompatActivity() {
     override fun onStart() {
         super.onStart()
         isVisible = true
-        binding.ipAddress.text = localIpv4()?.let { (ip, ethernet) ->
+        val net = localIpv4()
+        binding.ipAddress.text = net?.let { (ip, ethernet) ->
             getString(if (ethernet) R.string.ip_ethernet else R.string.ip_wifi, ip)
         } ?: getString(R.string.receiver_no_network)
+        // L'icona segue il tipo di collegamento: cavo o Wi-Fi.
+        binding.ipIcon.setImageResource(if (net == null || net.second) R.drawable.ic_ethernet else R.drawable.ic_wifi)
         renderAutoOpen()   // anche al ritorno dalla schermata di sistema dei permessi
         renderName()
         renderPin()
@@ -360,7 +363,6 @@ class MainActivity : AppCompatActivity() {
 
     private fun renderAutoOpen() {
         val enabled = AppSettings.autoOpen(this)
-        binding.autoOpenSwitch.isChecked = enabled
         binding.autoOpenSummary.setText(
             when {
                 !enabled -> R.string.auto_open_off

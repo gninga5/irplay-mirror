@@ -44,14 +44,14 @@
     <string name="privacy_note">Everything on your device screen appears on the TV, including notifications and messages.</string>
 
     <string name="auto_open_title">Open automatically</string>
-    <string name="auto_open_on">Opens when mirroring starts</string>
+    <string name="auto_open_on">On</string>
     <string name="auto_open_off">Off</string>
-    <string name="auto_open_needs_permission">Press OK to grant permission</string>
+    <string name="auto_open_needs_permission">Needs permission: press OK</string>
     <string name="overlay_unavailable">This TV does not allow automatic opening: open iRPlay Mirror before you start mirroring.</string>
 
     <string name="pin_title">PIN code</string>
     <string name="pin_summary_off">Off</string>
-    <string name="pin_summary_first">First time only</string>
+    <string name="pin_summary_first">First connection only</string>
     <string name="pin_summary_always">Every time</string>
     <string name="pin_dialog_title">PIN code</string>
     <string name="pin_option_off">Off</string>

@@ -41,14 +41,14 @@
     <string name="privacy_note">Sulla TV appare tutto ciò che è sullo schermo del dispositivo, comprese notifiche e messaggi.</string>
 
     <string name="auto_open_title">Apertura automatica</string>
-    <string name="auto_open_on">Si apre quando inizia la duplicazione</string>
+    <string name="auto_open_on">Attivata</string>
     <string name="auto_open_off">Disattivata</string>
-    <string name="auto_open_needs_permission">Premi OK per dare il permesso</string>
+    <string name="auto_open_needs_permission">Serve un permesso: premi OK</string>
     <string name="overlay_unavailable">Questa TV non consente l\'apertura automatica: apri iRPlay Mirror prima di iniziare la duplicazione.</string>
 
     <string name="pin_title">Codice PIN</string>
     <string name="pin_summary_off">Disattivato</string>
-    <string name="pin_summary_first">Solo al primo collegamento</string>
+    <string name="pin_summary_first">Al primo collegamento</string>
     <string name="pin_summary_always">A ogni collegamento</string>
     <string name="pin_dialog_title">Codice PIN</string>
     <string name="pin_option_off">Disattivato</string>

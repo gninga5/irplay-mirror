@@ -39,6 +39,9 @@ libsodium 1.0.22
   THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH REGARD TO
   THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS.
 
+Material Icons (home screen icons)
+  Copyright Google LLC. License: Apache License 2.0.
+
 Roboto (letters of the launcher banner)
   Copyright Google LLC. License: Apache License 2.0.
 

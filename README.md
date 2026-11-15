@@ -8,89 +8,98 @@
 
 <p align="center">
   <a href="https://github.com/gninga5/irplay-mirror/releases/latest">Download</a> ·
-  <a href="#building">Building</a> ·
-  <a href="#italiano">Italiano</a>
+  <a href="#building-it-yourself">Build it</a> ·
+  <a href="README.it.md">Italiano</a>
 </p>
 
 ---
 
-I wanted to put my iPhone screen on the TV in the living room without buying an Apple TV,
-and the receivers I tried on Google TV were either laggy, full of ads, or both. So I wrote
-my own.
+It started with a simple wish: put my iPhone on the living room TV without buying an Apple TV.
+The receivers I tried on Google TV were either laggy, full of ads, or both, so I ended up
+writing my own.
 
 iRPlay Mirror runs on the TV and shows up in **Control Center → Screen Mirroring** on any
-iPhone, iPad or Mac on the same network. Pick it and your screen (and sound) is on the TV.
+iPhone, iPad or Mac on the same network. Tap it and your screen, sound included, is on the TV.
 
 <p align="center">
   <img src="docs/home.png" alt="Home screen on the TV" width="720">
 </p>
 
-## What it does
+## What it can do
 
-- Screen mirroring from iOS, iPadOS and macOS, with audio
-- Hardware video decoding and a pipeline tuned for latency: on my Sony (MediaTek MT5895) a
-  frame takes around 10–20 ms from the network to the panel, at up to 60 fps
-- Works with the remote: press BACK to stop mirroring
-- If the phone walks out of Wi-Fi range, the TV notices within 3 seconds and goes back to the
-  home screen
-- Can bring itself to the front when you start mirroring (you can turn this off)
-- English and Italian, following the TV language
+The main thing is screen mirroring, and I spent a lot of time making it feel immediate. On my
+Sony (a MediaTek MT5895 inside) a frame goes from the network to the panel in about 10–20 ms,
+at up to 60 fps. Press BACK on the remote to stop; if the phone wanders out of Wi-Fi range,
+the TV notices within a few seconds and goes back to its home screen on its own.
 
-- Works as an AirPlay speaker too: pick it for music or podcasts and the TV shows what's
-  playing, with artwork and progress
-- Synced lyrics while music plays. AirPlay doesn't carry lyrics, so they're looked up online
-  ([lrcmux.dev](https://lrcmux.dev), then [LRCLIB](https://lrclib.net), then
-  [lyrics.ovh](https://lyrics.ovh)); only the song title, artist, album and duration are sent,
-  nothing is requested when the TV is offline, and it can be turned off from the home screen
-- PIN on by default: a new device has to enter the code shown on the TV the first time it
-  connects (can be set to every time, or off)
-- Each TV can have its own name
+It also works as an AirPlay speaker. Pick the TV from Apple Music, Spotify or a podcast app
+and you get a "Now playing" screen with the artwork, the progress bar and, when they can be
+found, the lyrics scrolling in time with the song. AirPlay doesn't send lyrics, so the app
+looks them up online: first [lrcmux.dev](https://lrcmux.dev), then [LRCLIB](https://lrclib.net),
+then [lyrics.ovh](https://lyrics.ovh). Only the song title, artist, album and length leave the
+TV, nothing is sent when it's offline, and you can switch it off from the home screen.
 
-What it doesn't do (yet): HEVC/4K, AirPlay "video" (the kind where YouTube hands the TV a
-URL) and multi-room audio.
+A few other things I wanted for myself:
+
+- **A PIN the first time.** A new iPhone or Mac has to type the four digits shown on the TV
+  before it can connect. After that it's remembered. You can ask for it every time, or turn it off.
+- **A name for each TV.** By default it uses the name you already gave the TV in Android, so
+  "Kitchen" and "Bedroom" don't get mixed up. If your TV has AirPlay built in (newer Sonys do),
+  it shows up as "Kitchen (iRPlay)" so you can tell the two apart.
+- **It can open itself** when you start mirroring, so you don't have to launch it first.
+- The interface is in English or Italian, depending on the TV.
+
+What it doesn't do yet: HEVC/4K, AirPlay "video" (when an app like YouTube hands the TV a link
+instead of mirroring the screen) and multi-room audio.
 
 ## Installing
 
-Grab the APK from the [latest release](https://github.com/gninga5/irplay-mirror/releases/latest)
-and sideload it. The easiest way is adb:
+Download the APK from the [latest release](https://github.com/gninga5/irplay-mirror/releases/latest)
+and sideload it. With adb it takes a minute:
 
-1. On the TV: Settings → System → About, press OK seven times on *Android TV OS build* to unlock
-   developer options, then turn on USB debugging (and network debugging if your TV has it).
-2. From a computer on the same network: `adb connect <tv-ip>:5555` and accept the prompt on the TV.
+1. On the TV, go to Settings → System → About and press OK seven times on *Android TV OS build*.
+   That unlocks the developer options, where you turn on USB debugging (and network debugging,
+   if your TV has it).
+2. From a computer on the same network, run `adb connect <tv-ip>:5555` and accept the prompt on the TV.
 3. `adb install iRPlay-Mirror-1.2.0.apk`
 
-Needs Android TV / Google TV 10 or newer on an ARM chip (pretty much every TV and stick out
-there).
+You need Android TV or Google TV 10 or newer on an ARM chip, which is pretty much every TV and
+streaming stick out there.
 
-Tip: switch the TV to its *Game* picture mode while mirroring. Most of the remaining delay is
-the TV's own image processing, and Game mode turns most of it off.
+One tip: switch the TV to its *Game* picture mode while you mirror. Most of the delay that's
+left comes from the TV's own image processing, and Game mode turns it off.
 
 ## How it works
 
-The receiver speaks the same protocol an Apple TV does. The networking and crypto are in C++
+The TV speaks the same protocol an Apple TV does. Networking and crypto live in C++
 (`app/src/main/cpp`), the Android side is Kotlin (`app/src/main/java`).
 
 ```
 Kotlin   MainActivity (SurfaceView, remote)   AirPlayService (foreground service, mDNS)
-           CodecManager (MediaCodec)             AudioRenderer (AAC-ELD → AudioTrack)
+           CodecManager (MediaCodec)             AudioRenderer (AudioTrack)
               ▲ JNI
-C++      RTSP server · pairing (Ed25519/X25519) · FairPlay handshake · AES-CTR video / AES-CBC audio
-         plist parser · H.264 AVCC → Annex-B · SPS rewrite for low latency · 3 s watchdog
+C++      RTSP server · pairing (Ed25519/X25519) · PIN (SRP-6a) · FairPlay handshake
+         AES-CTR video / AES-CBC audio · H.264 AVCC → Annex-B · SPS rewrite · ALAC · 3 s watchdog
 ```
 
-A couple of things that took a while to figure out, in case they help someone else:
+Some things took me a while to figure out, so I'll leave them here in case they save someone
+else an evening:
 
 - iOS never says whether its H.264 stream uses B-frames, so MediaTek decoders keep a reorder
   buffer "just in case" and hold back up to 18 frames. Rewriting the SPS to declare zero
-  reorder frames (same trick Moonlight uses) brought latency down from a few hundred
-  milliseconds to ~11 ms. If B-frames ever show up, the app switches back to the original SPS.
-- After the first connection iOS skips `pair-setup` and goes straight to `pair-verify`.
-- The `0x80` bit in the mDNS `flags` record means "password required". With it set, iOS 27
-  asks for a PIN and then gives up.
+  reorder frames (the same trick Moonlight uses) took latency from a few hundred milliseconds
+  down to about 11 ms. If B-frames ever show up, the app goes back to the original SPS.
+- After the first connection, iOS skips `pair-setup` and goes straight to `pair-verify`.
+- The `0x80` bit in the mDNS `flags` record means "password required". Set it by mistake and
+  iOS 27 asks for a PIN, then gives up.
+- In pause, iOS closes the audio stream and reopens it when you resume, while the session stays
+  up. If you treat that as "the music stopped", the screen keeps flipping back and forth.
+- Apple's reference ALAC decoder trusts the sample count written in each packet, and it reads
+  its own config byte-swapped on ARM. Both are fixed here, see `third_party/alac/PATCHES.md`.
 
-The key derivation chain is documented at the top of `airplay_crypto.h`.
+The key derivation chain is described at the top of `airplay_crypto.h`.
 
-## Building
+## Building it yourself
 
 ```
 git clone --recursive https://github.com/gninga5/irplay-mirror.git
@@ -101,46 +110,33 @@ cd -
 ./gradlew :app:assembleRelease
 ```
 
-The mbedTLS step only has to be done once; the Gradle build itself doesn't need Python.
-libsodium ships as a prebuilt AAR in `app/libs` (built from the official sources with
-`dist-build/android-aar.sh`).
+The mbedTLS step is needed only once; the Gradle build itself doesn't need Python. libsodium
+comes as a prebuilt AAR in `app/libs`, built from the official sources with
+`dist-build/android-aar.sh`.
 
 To sign with your own key, put `IRPLAY_STORE_FILE`, `IRPLAY_STORE_PASSWORD`,
-`IRPLAY_KEY_ALIAS` and `IRPLAY_KEY_PASSWORD` in `~/.gradle/gradle.properties`. Without them
-the release build falls back to the debug key.
+`IRPLAY_KEY_ALIAS` and `IRPLAY_KEY_PASSWORD` in `~/.gradle/gradle.properties`. Without them the
+release build falls back to the debug key.
 
 ### Tests
 
 `tools/hosttest/run_tests.sh` builds the native engine for macOS with AddressSanitizer and
-UBSan and runs it against a fake iPhone: pairing, FairPlay, video and audio decryption,
-watchdog, malformed requests and a few hundred thousand fuzzed plists and SPS. There's also a
-client that talks to the app running in the TV emulator, see `tools/hosttest/README.md`.
+UBSan and runs it against a fake iPhone: pairing and PIN, FairPlay, encrypted video and audio,
+lossless ALAC round trips, the watchdog, malformed requests, and a few hundred thousand fuzzed
+plists, SPS and ALAC packets. There's also a client that talks to the app running in the TV
+emulator, described in `tools/hosttest/README.md`.
 
 ## Credits and license
 
 iRPlay Mirror is released under the **GPL-3.0** (see `LICENSE`).
 
-It stands on the shoulders of [UxPlay](https://github.com/FDH2/UxPlay) and RPiPlay, whose
-reverse-engineering work on the protocol made this possible. The FairPlay part uses
-*playfair* (GPL-3) and reply tables by Juho Vähä-Herttua (LGPL-2.1+). Crypto comes from
+It stands on the shoulders of [UxPlay](https://github.com/FDH2/UxPlay) and RPiPlay, whose work
+on understanding the protocol made all of this possible. The FairPlay part uses *playfair*
+(GPL-3) and reply tables by Juho Vähä-Herttua (LGPL-2.1+). Crypto comes from
 [Mbed TLS](https://github.com/Mbed-TLS/mbedtls) (Apache-2.0) and
-[libsodium](https://libsodium.org) (ISC). Apple Lossless audio is decoded with Apple's
-[ALAC](https://github.com/macosforge/alac) reference decoder (Apache-2.0), with a bounds fix
-described in `third_party/alac/PATCHES.md`. The full notices are in the app under *Licenses*.
+[libsodium](https://libsodium.org) (ISC), Apple Lossless audio from Apple's
+[ALAC](https://github.com/macosforge/alac) decoder (Apache-2.0), and the icons from Google's
+Material Icons (Apache-2.0). The full notices are in the app, under *Licenses*.
 
-iRPlay Mirror is an independent project and is not affiliated with or endorsed by Apple Inc.
+iRPlay Mirror is an independent project and isn't affiliated with or endorsed by Apple Inc.
 AirPlay, iPhone, iPad and Mac are trademarks of Apple Inc.
-
----
-
-## Italiano
-
-iRPlay Mirror trasforma una TV Android / Google TV in un ricevitore per la duplicazione
-schermo: da iPhone, iPad o Mac apri il Centro di Controllo, tocca *Duplica schermo* e scegli
-**iRPlay Mirror**. Video e audio arrivano sulla TV, con una latenza molto bassa.
-
-Per installarla scarica l'APK dall'[ultima release](https://github.com/gninga5/irplay-mirror/releases/latest)
-e installalo con `adb install` (i passaggi sono nella sezione *Installing* qui sopra).
-L'interfaccia è in italiano se la TV è impostata in italiano.
-
-Il consiglio più utile: metti la TV in modalità immagine *Gioco* mentre duplichi lo schermo.

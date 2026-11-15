@@ -118,7 +118,10 @@ else an evening:
   64-bit number and sometimes loses its leading zero on one side, so compare it as a number.
   Apple Music answers 400 to `dacp.playingtime`, but it does accept `beginff`/`playresume`.
 - Apple's reference ALAC decoder trusts the sample count written in each packet, and it reads
-  its own config byte-swapped on ARM. Both are fixed here, see `third_party/alac/PATCHES.md`.
+  its own config byte-swapped on ARM. I patched both, then found out it has known CVEs that
+  were never fixed upstream (the repository has been frozen since 2012), so the app now uses
+  FFmpeg's ALAC decoder instead, built with nothing else by `tools/build_ffmpeg.sh`. Apple's
+  encoder is still in `tools/hosttest` to generate test packets.
 
 The key derivation chain is described at the top of `airplay_crypto.h`.
 
@@ -157,8 +160,8 @@ It stands on the shoulders of [UxPlay](https://github.com/FDH2/UxPlay) and RPiPl
 on understanding the protocol made all of this possible. The FairPlay part uses *playfair*
 (GPL-3) and reply tables by Juho Vähä-Herttua (LGPL-2.1+). Crypto comes from
 [Mbed TLS](https://github.com/Mbed-TLS/mbedtls) (Apache-2.0) and
-[libsodium](https://libsodium.org) (ISC), Apple Lossless audio from Apple's
-[ALAC](https://github.com/macosforge/alac) decoder (Apache-2.0), and the icons from Google's
+[libsodium](https://libsodium.org) (ISC), Apple Lossless audio from
+[FFmpeg](https://ffmpeg.org)'s ALAC decoder (LGPL-2.1+), and the icons from Google's
 Material Icons (Apache-2.0). The full notices are in the app, under *Licenses*.
 
 iRPlay Mirror is an independent project and isn't affiliated with or endorsed by Apple Inc.

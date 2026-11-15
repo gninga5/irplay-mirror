@@ -4,6 +4,7 @@
 #   - mbedTLS   (Apache-2.0): AES-128-CTR (video mirroring) e AES-128-CBC (audio)
 #   - libsodium (ISC, Prefab AAR): Ed25519 / X25519 / SHA-512 per pair-setup/verify
 #   - playfair  (GPL-3): decifratura della chiave FairPlay ricevuta in fp-setup
+#   - FFmpeg    (LGPL-2.1+): solo il decoder ALAC, per l'audio "solo musica"
 # ==============================================================================
 cmake_minimum_required(VERSION 3.22.1)
 project("irplay_native" C CXX)
@@ -43,20 +44,21 @@ add_library(playfair STATIC
 target_include_directories(playfair PUBLIC ${THIRD_PARTY}/playfair)
 target_compile_options(playfair PRIVATE -w)   # codice upstream: i warning vanno visti solo sul nostro codice
 
-# --- ALAC: decoder Apple Lossless ufficiale (Apache-2.0), per l'audio "solo musica" ----------
-add_library(alac STATIC
-        ${THIRD_PARTY}/alac/ALACDecoder.cpp
-        ${THIRD_PARTY}/alac/ALACBitUtilities.c
-        ${THIRD_PARTY}/alac/EndianPortable.c
-        ${THIRD_PARTY}/alac/ag_dec.c
-        ${THIRD_PARTY}/alac/dp_dec.c
-        ${THIRD_PARTY}/alac/matrix_dec.c)
-target_include_directories(alac PUBLIC ${THIRD_PARTY}/alac)
-target_compile_options(alac PRIVATE -w)
+# --- ALAC: decoder Apple Lossless di FFmpeg (LGPL-2.1+), librerie statiche precompilate ------
+# Generate da tools/build_ffmpeg.sh (FFmpeg con il solo decoder ALAC, sorgente verificato
+# con SHA-256). Per rigenerarle: tools/build_ffmpeg.sh android.
+set(FFMPEG ${THIRD_PARTY}/ffmpeg)
+add_library(ffmpeg_avcodec STATIC IMPORTED)
+set_target_properties(ffmpeg_avcodec PROPERTIES
+        IMPORTED_LOCATION ${FFMPEG}/lib/${ANDROID_ABI}/libavcodec.a
+        INTERFACE_INCLUDE_DIRECTORIES ${FFMPEG}/include)
+add_library(ffmpeg_avutil STATIC IMPORTED)
+set_target_properties(ffmpeg_avutil PROPERTIES IMPORTED_LOCATION ${FFMPEG}/lib/${ANDROID_ABI}/libavutil.a)
 
 # --- Libreria iRPlay ---------------------------------------------------------------
 add_library(${CMAKE_PROJECT_NAME} SHARED
         jni_bridge.cpp
+        alac_decoder.cpp
         airplay_server.cpp
         airplay_media.cpp
         hls_playlist.cpp
@@ -85,6 +87,7 @@ target_link_libraries(${CMAKE_PROJECT_NAME}
         sodium::sodium-static
         mbedcrypto
         playfair
-        alac
+        ffmpeg_avcodec
+        ffmpeg_avutil     # dopo avcodec: l'ordine conta per il linker con le librerie statiche
         ${log-lib}
         android)

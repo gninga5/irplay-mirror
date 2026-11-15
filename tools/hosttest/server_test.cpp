@@ -26,8 +26,7 @@
 #include "hls_playlist.h"
 #include "now_playing.h"
 #include "ALACEncoder.h"
-#include "ALACDecoder.h"
-#include "ALACBitUtilities.h"
+#include "alac_decoder.h"
 #include "nal_parser.h"
 #include "plist_reader.h"
 #include "plist_writer.h"
@@ -544,29 +543,38 @@ static void testMusic(const ReceiverInfo& info, const uint8_t seed[32], const ui
     close(ph.fd); close(us); close(ctl);
     server.stop();
 
-    // 6) fuzzing del decoder ALAC (stessa configurazione dell'app): nessun crash con dati alterati
-    ALACDecoder dec; uint8_t cookie[24] = {0,0,1,0x60, 0, 16, 40, 10, 14, 2, 0, 255, 0,0,0,0, 0,0,0,0, 0,0,0xAC,0x44};
-    CHECK(dec.Init(cookie, 24) == 0);
-    // la configurazione big-endian deve essere letta correttamente (difetto di EndianPortable su ARM)
-    CHECK(dec.mConfig.frameLength == 352 && dec.mConfig.sampleRate == 44100 && dec.mConfig.maxRun == 255);
-    Bytes outb(4096 * 2 * 4);
+    // 6) decoder ALAC dell'app (FFmpeg) da solo: senza perdita, limiti, fuzzing
+    irplay::AlacDecoder dec;
+    CHECK(dec.init());
+    {
+        Bytes all, out;
+        for (const auto& pk : pkts) { CHECK(dec.decode(pk.data(), pk.size(), out)); all.insert(all.end(), out.begin(), out.end()); }
+        CHECK(all.size() == pcm.size() * 2 && memcmp(all.data(), pcm.data(), all.size()) == 0);
+    }
     // pacchetto con "partialFrame" che dichiara 1000 campioni (> 352): va rifiutato
     {
-        Bytes bad(64 + 16 * 1024, 0); size_t bit = 0;
+        Bytes bad(64, 0), out; size_t bit = 0;
         auto put = [&](uint32_t v, int n) { for (int i = n - 1; i >= 0; --i, ++bit) if ((v >> i) & 1) bad[bit / 8] |= (uint8_t) (0x80 >> (bit % 8)); };
         put(0, 3); put(0, 4); put(0, 12); put(8, 4); put(1000, 32);   // SCE, tag 0, header 0, partialFrame
-        BitBuffer bb; BitBufferInit(&bb, bad.data(), 64);
-        uint32_t ns = 0;
-        CHECK(dec.Decode(&bb, outb.data(), 352, 2, &ns) != 0);
+        CHECK(!dec.decode(bad.data(), bad.size(), out));
+        CHECK(!dec.decode(bad.data(), 0, out));
+        Bytes huge(irplay::AlacDecoder::kMaxPacket + 1, 0);
+        CHECK(!dec.decode(huge.data(), huge.size(), out));
     }
-    for (int it = 0; it < 200000; ++it) {
-        Bytes m = pkts[rng() % pkts.size()];
-        for (int k = 0, n = 1 + rng() % 4; k < n; ++k) m[rng() % m.size()] = (uint8_t) rng();
-        if (rng() % 8 == 0) m.resize(1 + rng() % m.size());
-        const size_t real = m.size();
-        m.resize(real + 16 * 1024, 0);   // stesso margine di AlacDecoder nell'app
-        BitBuffer bb; BitBufferInit(&bb, m.data(), (uint32_t) real);
-        uint32_t ns = 0; dec.Decode(&bb, outb.data(), 352, 2, &ns);
+    {
+        Bytes out;
+        for (int it = 0; it < 200000; ++it) {
+            Bytes m = pkts[rng() % pkts.size()];
+            for (int k = 0, n = 1 + rng() % 4; k < n; ++k) m[rng() % m.size()] = (uint8_t) rng();
+            if (rng() % 8 == 0) m.resize(1 + rng() % m.size());
+            if (dec.decode(m.data(), m.size(), out)) CHECK(out.size() <= 352u * 4 && out.size() % 4 == 0);
+        }
+        for (int it = 0; it < 50000; ++it) {   // byte del tutto casuali
+            Bytes m(1 + rng() % 2048); for (auto& c : m) c = (uint8_t) rng();
+            if (dec.decode(m.data(), m.size(), out)) CHECK(out.size() <= 352u * 4);
+        }
+        // dopo tutto questo il decoder funziona ancora
+        CHECK(dec.decode(pkts[0].data(), pkts[0].size(), out) && memcmp(out.data(), pcm.data(), out.size()) == 0);
     }
     fprintf(stderr, "test audio musica completati\n");
 }

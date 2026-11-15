@@ -21,12 +21,11 @@
 
 #include <mbedtls/platform_util.h>
 
+#include "alac_decoder.h"
 #include "log.h"
 #include "nal_parser.h"
 #include "net_util.h"
 #include "sps_rewriter.h"
-#include "third_party/alac/ALACBitUtilities.h"
-#include "third_party/alac/ALACDecoder.h"
 
 #ifdef __ANDROID__
 #include <sys/resource.h>
@@ -233,61 +232,6 @@ namespace irplay {
         ::close(connFd_);
         connFd_ = -1;
     }
-
-    // =============================================================== ALAC
-
-    /*
-     * Decoder Apple Lossless (sorgente ufficiale Apple, Apache-2.0, in third_party/alac).
-     * AirPlay usa sempre la stessa configurazione, che iOS non invia nel SETUP (era nel
-     * campo "fmtp" dell'ANNOUNCE di AirPlay 1): 352 campioni per pacchetto, 16 bit, stereo,
-     * 44,1 kHz -> "96 352 0 16 40 10 14 2 255 0 0 44100".
-     * Il pacchetto arriva dalla rete. Il decoder Apple ha due punti deboli (vedi
-     * third_party/alac/PATCHES.md): non controllava il numero di campioni dichiarato dal pacchetto
-     * (corretto nel sorgente) e il suo lettore di bit non controlla la fine del buffer. Per il
-     * secondo si decodifica da una copia con kPadding byte di zeri in coda, più del massimo che
-     * può leggere con al più kFrame campioni, verso un buffer di uscita molto più grande del
-     * necessario; si accettano solo esiti con al massimo kFrame campioni.
-     */
-    class AlacDecoder {
-    public:
-        static constexpr uint32_t kFrame = 352;
-        static constexpr uint32_t kChannels = 2;
-        static constexpr size_t kPadding = 16 * 1024;
-
-        bool init() {
-            uint8_t cookie[24] = {
-                    0x00, 0x00, 0x01, 0x60,   // frameLength 352
-                    0x00,                     // compatibleVersion
-                    0x10,                     // bitDepth 16
-                    0x28, 0x0A, 0x0E,         // pb 40, mb 10, kb 14
-                    0x02,                     // numChannels
-                    0x00, 0xFF,               // maxRun 255
-                    0x00, 0x00, 0x00, 0x00,   // maxFrameBytes
-                    0x00, 0x00, 0x00, 0x00,   // avgBitRate
-                    0x00, 0x00, 0xAC, 0x44,   // sampleRate 44100
-            };
-            return dec_.Init(cookie, sizeof cookie) == 0;
-        }
-
-        // Restituisce false se il pacchetto non è decodificabile; out = PCM 16 bit little-endian interleaved.
-        bool decode(const uint8_t* in, size_t len, std::vector<uint8_t>& out) {
-            if (len == 0 || len > 8192) return false;
-            in_.assign(in, in + len);
-            in_.resize(len + kPadding, 0);
-            scratch_.assign(4096 * kChannels * 4, 0);
-            BitBuffer bits;
-            BitBufferInit(&bits, in_.data(), static_cast<uint32_t>(len));
-            uint32_t samples = 0;
-            if (dec_.Decode(&bits, scratch_.data(), kFrame, kChannels, &samples) != 0) return false;
-            if (samples == 0 || samples > kFrame) return false;
-            out.assign(scratch_.begin(), scratch_.begin() + samples * kChannels * 2);
-            return true;
-        }
-
-    private:
-        ALACDecoder dec_;
-        std::vector<uint8_t> in_, scratch_;
-    };
 
     // =============================================================== AudioStream
 

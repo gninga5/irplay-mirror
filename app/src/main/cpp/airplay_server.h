@@ -85,6 +85,7 @@ namespace irplay {
         bool handlePinStart(ConnState& st, const RtspRequest& req);
         bool handlePinSetup(ConnState& st, const RtspRequest& req);
         bool clientAllowed(ConnState& st, const uint8_t clientEdKey[32]);
+        std::string currentOrNewPinLocked(bool& isNew);
         bool handleTeardown(ConnState& st, const RtspRequest& req);
         void endSession(ConnState& st, EndReason reason);
 
@@ -109,7 +110,7 @@ namespace irplay {
         std::vector<std::array<uint8_t, 32>> trusted_;
         std::string pin_;               // PIN attivo, vuoto se nessuno
         int64_t pinExpiresMs_ = 0;
-        int pinFailures_ = 0;
+        int pinFailures_ = 0;          // tentativi sbagliati sul PIN attivo
         int lockLevel_ = 0;
         int64_t lockedUntilMs_ = 0;
     };

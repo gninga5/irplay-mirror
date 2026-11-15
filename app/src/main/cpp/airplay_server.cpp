@@ -382,8 +382,31 @@ namespace irplay {
         return false;
     }
 
+    /**
+     * PIN attivo, o uno nuovo se non c'è o è scaduto. Va chiamata con pinMutex_ tenuto.
+     * Un solo PIN alla volta: iOS può chiedere pair-pin-start più volte per la stessa richiesta
+     * e riprovare pair-setup-pin su connessioni nuove ogni volta che l'utente ridigita il codice;
+     * se la TV generasse un PIN nuovo a ogni richiesta, quello a schermo non corrisponderebbe più
+     * a quello che l'iPhone sta chiedendo.
+     */
+    std::string AirPlayServer::currentOrNewPinLocked(bool& isNew) {
+        const int64_t now = monotonicMs();
+        isNew = pin_.empty() || now > pinExpiresMs_;
+        if (isNew) {
+            // 4 cifre uniformi dal generatore crittografico (randombytes_uniform evita il bias del modulo).
+            char buf[8];
+            std::snprintf(buf, sizeof buf, "%04u", static_cast<unsigned>(randombytes_uniform(10000)));
+            pin_ = buf;
+            sodium_memzero(buf, sizeof buf);
+            pinExpiresMs_ = now + kPinLifetimeMs;
+            pinFailures_ = 0;
+        }
+        return pin_;
+    }
+
     bool AirPlayServer::handlePinStart(ConnState& st, const RtspRequest& req) {
         std::string pin;
+        bool isNew = false;
         {
             std::lock_guard<std::mutex> lock(pinMutex_);
             if (pinMode_ == PinMode::Off) return sendResponse(st.fd, &req, 404, "Not Found");
@@ -393,16 +416,10 @@ namespace irplay {
                      static_cast<long long>((lockedUntilMs_ - now) / 1000));
                 return sendResponse(st.fd, &req, 503, "Service Unavailable");
             }
-            // 4 cifre uniformi dal generatore crittografico (randombytes_uniform evita il bias del modulo).
-            char buf[8];
-            std::snprintf(buf, sizeof buf, "%04u", static_cast<unsigned>(randombytes_uniform(10000)));
-            pin_ = buf;
-            pin = pin_;
-            pinExpiresMs_ = now + kPinLifetimeMs;
-            sodium_memzero(buf, sizeof buf);
+            pin = currentOrNewPinLocked(isNew);
         }
-        LOGI("Richiesto il PIN: mostrato sulla TV");   // il PIN non va mai nel log
-        sink_->onPinRequested(pin);
+        LOGI(isNew ? "Richiesto il PIN: mostrato sulla TV" : "Richiesto di nuovo il PIN: resta quello a schermo");
+        sink_->onPinRequested(pin);   // il PIN non va mai nel log, solo a schermo
         sodium_memzero(pin.data(), pin.size());
         return sendResponse(st.fd, &req, 200, "OK");
     }
@@ -437,16 +454,27 @@ namespace irplay {
         if (method && user && method->asString() && user->asString()) {
             if (*method->asString() != "pin") return fail();
             std::string pin;
+            bool showNew = false;
             {
                 std::lock_guard<std::mutex> lock(pinMutex_);
+                if (monotonicMs() < lockedUntilMs_) return fail();
                 if (pin_.empty() || monotonicMs() > pinExpiresMs_) {
-                    pin_.clear();
-                    LOGW("pair-setup-pin senza un PIN valido");
+                    // iOS riprova senza pair-pin-start (l'utente ridigita il codice dopo che il
+                    // PIN precedente è stato usato o è scaduto). Si mostra un PIN nuovo e si
+                    // rifiuta questo tentativo: iOS chiede di nuovo il codice, che ora è a schermo.
+                    bool isNew = false;
+                    pin = currentOrNewPinLocked(isNew);
+                    showNew = true;
+                    LOGW("pair-setup-pin senza un PIN attivo: ne mostro uno nuovo");
                 } else {
                     pin = pin_;
                 }
             }
-            if (pin.empty()) return fail();
+            if (showNew) {
+                sink_->onPinRequested(pin);
+                sodium_memzero(pin.data(), pin.size());
+                return fail();
+            }
             std::vector<uint8_t> salt, B;
             const bool ok = st.pairing.pinBegin(*user->asString(), pin, salt, B);
             sodium_memzero(pin.data(), pin.size());
@@ -463,20 +491,24 @@ namespace irplay {
             const auto& A = *pk->asData();
             const auto& M1 = *proof->asData();
             if (!st.pairing.pinProof(A.data(), A.size(), M1.data(), M1.size(), M2)) {
+                // Il PIN resta valido (e a schermo) per ridigitarlo, ma ogni PIN ammette al massimo
+                // kPinMaxFailures errori: poi viene ritirato e scatta il blocco, che raddoppia.
+                bool locked = false;
                 {
                     std::lock_guard<std::mutex> lock(pinMutex_);
-                    pin_.clear();   // un PIN sbagliato non si può ritentare: ne serve uno nuovo
                     if (++pinFailures_ >= kPinMaxFailures) {
+                        pin_.clear();
                         pinFailures_ = 0;
                         const int shift = lockLevel_ < 6 ? lockLevel_ : 6;
                         lockedUntilMs_ = monotonicMs() + (60000LL << shift);
                         ++lockLevel_;
+                        locked = true;
                         LOGW("PIN sbagliato più volte: nuovi tentativi bloccati per %lld s",
                              static_cast<long long>((60000LL << shift) / 1000));
                     }
                 }
                 LOGW("PIN sbagliato");
-                sink_->onPinDismissed();
+                if (locked) sink_->onPinDismissed();
                 return fail();
             }
             plist::Dict r;

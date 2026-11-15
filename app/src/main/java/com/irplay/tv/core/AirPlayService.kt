@@ -65,6 +65,7 @@ class AirPlayService : Service() {
     // Nome alternativo usato quando quello scelto è già annunciato da un altro dispositivo
     // (es. una Sony con AirPlay integrato che si chiama come la TV). Solo in memoria.
     private var nameOverride: String? = null
+    private var overrideBase: String? = null   // nome scelto che aveva causato il conflitto
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -72,7 +73,6 @@ class AirPlayService : Service() {
         // startForeground va chiamato subito: Android termina il servizio se non arriva entro pochi secondi.
         startInForeground()
         if (intent?.action == ACTION_RELOAD && started) {
-            nameOverride = null   // l'utente ha cambiato le impostazioni: si riparte dal suo nome
             if (ReceiverState.isInSession) renamePending = true else scope.launch { republish() }
             return START_STICKY
         }
@@ -106,7 +106,11 @@ class AirPlayService : Service() {
     /** Avvia il server e annuncia la TV con il nome corrente. */
     private suspend fun publish() {
         val id = identity ?: return
-        deviceName = nameOverride ?: AppSettings.tvName(applicationContext)
+        // L'alternativa resta valida finché l'utente non sceglie un altro nome: cambiare solo
+        // il PIN non deve far ripartire il giro "conflitto -> ripubblica".
+        val chosen = AppSettings.tvName(applicationContext)
+        if (overrideBase != chosen) { nameOverride = null; overrideBase = null }
+        deviceName = nameOverride ?: chosen
         ReceiverState.setPublishedName(deviceName)
         val rtspPort = withContext(Dispatchers.IO) { startNativeServer(id) }
         if (rtspPort <= 0) {
@@ -401,6 +405,7 @@ class AirPlayService : Service() {
                     val suffix = " (iRPlay)"
                     val base = requested.take(AppSettings.MAX_NAME_CHARS - suffix.length).trimEnd()
                     nameOverride = AppSettings.sanitizeName(base + suffix)
+                    overrideBase = requested
                     Log.i(TAG, "Nome già usato da un altro dispositivo: ripubblico con un nome distinto")
                     scope.launch { republish() }
                 } else if (type == "_airplay._tcp") {

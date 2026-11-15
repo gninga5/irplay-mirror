@@ -350,6 +350,25 @@ static void testPin(const ReceiverInfo& baseInfo, const uint8_t seed[32], const 
     { int fd = connectTcp(port); CHECK(verifyWith(fd, serverPk, edPk, edSk, &len)); close(fd); }
     { uint8_t o[32], os[64]; crypto_sign_keypair(o, os); int fd = connectTcp(port); CHECK(!verifyWith(fd, serverPk, o, os, &len) && len == 0); close(fd); }
 
+    // PIN sbagliato e poi giusto, senza nuovo pair-pin-start: deve riuscire (l'utente ridigita)
+    {
+        uint8_t o[32], os[64]; crypto_sign_keypair(o, os);
+        int fd = connectTcp(port); bool ok3 = true;
+        pinPair(fd, *sink, serverPk, o, true, &ok3); CHECK(!ok3); close(fd);
+        fd = connectTcp(port);
+        CHECK(pinPair(fd, *sink, serverPk, o, false, &ok3)); CHECK(ok3);   // pair-pin-start restituisce lo stesso PIN
+        close(fd);
+        CHECK(sink->waitFor("trusted"));
+    }
+    // pair-setup-pin senza PIN attivo: rifiutato, ma un PIN nuovo compare a schermo
+    {
+        int fd = connectTcp(port);
+        Resp r = rtsp(fd, "POST", "/pair-setup-pin", *plist::toBinary(plist::Dict().set("method", "pin").set("user", "X")),
+                      "Content-Type: application/x-apple-binary-plist\r\n", "HTTP/1.1");
+        CHECK(r.code == 470);
+        CHECK(sink->waitFor("pin"));
+        close(fd);
+    }
     // 3 PIN sbagliati: blocco, e pair-pin-start risponde 503
     for (int i = 0; i < 3; ++i) {
         int fd = connectTcp(port); bool ok3 = true;

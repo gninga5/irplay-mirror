@@ -38,6 +38,15 @@ found, the lyrics scrolling in time with the song. AirPlay doesn't send lyrics, 
 looks them up online: first [lrcmux.dev](https://lrcmux.dev), then [LRCLIB](https://lrclib.net),
 then [lyrics.ovh](https://lyrics.ovh). Only the song title, artist, album and length leave the
 TV, nothing is sent when it's offline, and you can switch it off from the home screen.
+The TV remote works on that screen too: previous track, play/pause and next track are buttons
+you can reach with the arrows, and on the progress bar ◀ ▶ skip 10 seconds. With Apple Music
+the skip isn't instant, because the phone only accepts fast-forward from a receiver like this
+one: a 30-second jump takes about ten seconds.
+
+The AirPlay button inside apps works too. In YouTube, Safari and many other apps, picking the
+TV doesn't mirror the screen: the phone hands over the video and the TV plays it by itself, at
+full quality, while the phone becomes a remote for pause, seek and stop. You can lock the
+phone or use other apps in the meantime.
 
 A few other things I wanted for myself:
 
@@ -49,8 +58,8 @@ A few other things I wanted for myself:
 - **It can open itself** when you start mirroring, so you don't have to launch it first.
 - The interface is in English or Italian, depending on the TV.
 
-What it doesn't do yet: HEVC/4K, AirPlay "video" (when an app like YouTube hands the TV a link
-instead of mirroring the screen) and multi-room audio.
+What it doesn't do yet: HEVC/4K mirroring, copy-protected videos (Apple TV+, films bought on
+iTunes: those only play on an Apple TV) and multi-room audio.
 
 ## Installing
 
@@ -61,7 +70,7 @@ and sideload it. With adb it takes a minute:
    That unlocks the developer options, where you turn on USB debugging (and network debugging,
    if your TV has it).
 2. From a computer on the same network, run `adb connect <tv-ip>:5555` and accept the prompt on the TV.
-3. `adb install iRPlay-Mirror-1.2.0.apk`
+3. `adb install iRPlay-Mirror-1.3.0.apk`
 
 You need Android TV or Google TV 10 or newer on an ARM chip, which is pretty much every TV and
 streaming stick out there.
@@ -90,10 +99,24 @@ else an evening:
   reorder frames (the same trick Moonlight uses) took latency from a few hundred milliseconds
   down to about 11 ms. If B-frames ever show up, the app goes back to the original SPS.
 - After the first connection, iOS skips `pair-setup` and goes straight to `pair-verify`.
+- With YouTube the phone doesn't send a link the TV can open, but `mlhls://localhost/master.m3u8`:
+  the playlists live on the phone. The TV asks for them one by one over a reversed HTTP
+  connection, expands YouTube's condensed segment URLs and feeds them to ExoPlayer straight
+  from memory, so no extra port is opened on the TV.
 - The `0x80` bit in the mDNS `flags` record means "password required". Set it by mistake and
   iOS 27 asks for a PIN, then gives up.
 - In pause, iOS closes the audio stream and reopens it when you resume, while the session stays
   up. If you treat that as "the music stopped", the screen keeps flipping back and forth.
+- iOS sends the audio about 1.8 s early and says, once a second, which sample should be playing
+  right now. Playing packets as soon as they arrive works, but the TV ends up 1.8 s ahead of the
+  phone, and every pause and resume makes the progress bar jump. The packets have to wait for
+  their time, as on an Apple TV.
+- While paused, iOS keeps sending packets for a few more seconds, and they're pure silence. Only
+  real sound counts as "playing again".
+- Controlling the music from the TV goes through DACP: the phone sends `DACP-ID` and
+  `Active-Remote` in the RTSP headers and advertises `iTunes_Ctrl_<id>` over mDNS. The ID is a
+  64-bit number and sometimes loses its leading zero on one side, so compare it as a number.
+  Apple Music answers 400 to `dacp.playingtime`, but it does accept `beginff`/`playresume`.
 - Apple's reference ALAC decoder trusts the sample count written in each packet, and it reads
   its own config byte-swapped on ARM. Both are fixed here, see `third_party/alac/PATCHES.md`.
 

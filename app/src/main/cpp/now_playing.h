@@ -29,4 +29,10 @@ namespace irplay::nowplaying {
     /** "progress: a/b/c" -> posizione e durata in millisecondi. false se il formato non è valido. */
     bool parseProgress(const uint8_t* data, size_t len, int64_t& positionMs, int64_t& durationMs);
 
+    /** "progress: a/b/c" -> i tre timestamp RTP (inizio, posizione secondo iOS, fine). */
+    bool parseProgressRtp(const uint8_t* data, size_t len, uint32_t& start, uint32_t& current, uint32_t& end);
+
+    /** Posizione e durata in ms da timestamp RTP; false se current non sta tra start e end. */
+    bool progressMs(uint32_t start, uint32_t current, uint32_t end, int64_t& positionMs, int64_t& durationMs);
+
 } // namespace irplay::nowplaying

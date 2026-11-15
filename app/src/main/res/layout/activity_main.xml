@@ -596,14 +596,29 @@
                     style="@style/iRPlay.LyricLine" />
             </LinearLayout>
 
-            <ProgressBar
-                android:id="@+id/np_progress"
-                style="?android:attr/progressBarStyleHorizontal"
+            <!-- Barra di avanzamento: con il fuoco (freccia su dai pulsanti) ◀ ▶ spostano il brano. -->
+            <FrameLayout
+                android:id="@+id/np_seek"
                 android:layout_width="match_parent"
-                android:layout_height="6dp"
-                android:layout_marginTop="28dp"
-                android:max="1000"
-                android:progressDrawable="@drawable/progress_track" />
+                android:layout_height="wrap_content"
+                android:layout_marginTop="20dp"
+                android:background="@drawable/bg_focusable_pill"
+                android:contentDescription="@string/np_seek"
+                android:focusable="true"
+                android:nextFocusDown="@id/np_play_pause"
+                android:paddingHorizontal="12dp"
+                android:paddingVertical="8dp">
+
+                <ProgressBar
+                    android:id="@+id/np_progress"
+                    style="?android:attr/progressBarStyleHorizontal"
+                    android:layout_width="match_parent"
+                    android:layout_height="6dp"
+                    android:layout_gravity="center_vertical"
+                    android:focusable="false"
+                    android:max="1000"
+                    android:progressDrawable="@drawable/progress_track" />
+            </FrameLayout>
 
             <LinearLayout
                 android:layout_width="match_parent"
@@ -625,12 +640,61 @@
                     android:layout_height="wrap_content" />
             </LinearLayout>
 
+            <!-- Comandi verso l'app che suona sull'iPhone (DACP): frecce per spostarsi, OK per premere. -->
+            <LinearLayout
+                android:id="@+id/np_controls"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:gravity="center"
+                android:orientation="horizontal">
+
+                <ImageButton
+                    android:id="@+id/np_prev"
+                    android:nextFocusUp="@id/np_seek"
+                    android:layout_width="44dp"
+                    android:layout_height="44dp"
+                    android:background="@drawable/bg_focusable_pill"
+                    android:contentDescription="@string/np_prev"
+                    android:focusable="true"
+                    android:nextFocusLeft="@id/np_prev"
+                    android:padding="12dp"
+                    android:scaleType="fitCenter"
+                    android:src="@drawable/ic_np_prev" />
+
+                <ImageButton
+                    android:id="@+id/np_play_pause"
+                    android:nextFocusUp="@id/np_seek"
+                    android:layout_width="56dp"
+                    android:layout_height="56dp"
+                    android:layout_marginHorizontal="16dp"
+                    android:background="@drawable/bg_focusable_pill"
+                    android:contentDescription="@string/np_play_pause"
+                    android:focusable="true"
+                    android:padding="14dp"
+                    android:scaleType="fitCenter"
+                    android:src="@drawable/ic_np_pause" />
+
+                <ImageButton
+                    android:id="@+id/np_next"
+                    android:nextFocusUp="@id/np_seek"
+                    android:layout_width="44dp"
+                    android:layout_height="44dp"
+                    android:background="@drawable/bg_focusable_pill"
+                    android:contentDescription="@string/np_next"
+                    android:focusable="true"
+                    android:nextFocusRight="@id/np_next"
+                    android:padding="12dp"
+                    android:scaleType="fitCenter"
+                    android:src="@drawable/ic_np_next" />
+            </LinearLayout>
+
             <TextView
                 android:id="@+id/np_source"
                 style="@style/iRPlay.Secondary"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="32dp"
+                android:layout_marginTop="20dp"
                 android:textColor="@color/text_muted" />
         </LinearLayout>
     </LinearLayout>

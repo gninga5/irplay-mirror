@@ -43,6 +43,14 @@
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
             </intent-filter>
         </activity>
+        <!-- Lettore AirPlay video: una sola istanza, aggiornata con onNewIntent quando
+             l'iPhone passa al video successivo. Non esportata: la apre solo il servizio. -->
+        <activity
+            android:name=".ui.VideoActivity"
+            android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenLayout|screenSize|smallestScreenSize|uiMode|density"
+            android:exported="false"
+            android:launchMode="singleTask"
+            android:screenOrientation="landscape" />
         <activity
             android:name=".ui.LicensesActivity"
             android:exported="false" />

@@ -16,6 +16,8 @@
  *  - Un thread dedicato con coda limitata: i pacchetti arrivano dal thread di rete, che non
  *    deve mai attendere il decoder. Oltre il limite si scartano i più vecchi.
  *  - Scrittura bloccante su AudioTrack in MODE_STREAM: è la scrittura stessa a dare il ritmo.
+ *    Per la musica ogni pacchetto ha anche un istante di uscita (sincronizzazione di iOS):
+ *    la TV suona insieme all'orologio dell'iPhone, e pausa e ripresa coincidono con il telefono.
  *  - Audio focus richiesto all'avvio dello stream e rilasciato alla fine: se un'altra app lo
  *    prende, l'audio dell'iPhone viene silenziato invece di sovrapporsi.
  *
@@ -32,6 +34,7 @@ import android.media.AudioTrack
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
+import android.os.SystemClock
 import android.util.Log
 import com.irplay.tv.core.NativeBridge
 import java.nio.ByteBuffer
@@ -47,7 +50,10 @@ class AudioRenderer(context: Context) : NativeBridge.AudioSink {
         .setUsage(AudioAttributes.USAGE_MEDIA)
         .setContentType(AudioAttributes.CONTENT_TYPE_MOVIE)
         .build()
-    private val queue = LinkedBlockingQueue<ByteArray>(QUEUE_CAPACITY)
+    /** Pacchetto e istante di uscita (SystemClock.uptimeMillis; 0 = subito). */
+    private class Frame(val data: ByteArray, val dueMs: Long)
+
+    private val queue = LinkedBlockingQueue<Frame>(QUEUE_CAPACITY)
     private val lock = Any()
     private val flushRequested = AtomicBoolean(false)
 
@@ -57,6 +63,12 @@ class AudioRenderer(context: Context) : NativeBridge.AudioSink {
     @Volatile private var track: AudioTrack? = null
     @Volatile private var gain = 1f
     @Volatile private var focusFactor = 1f
+    // Scorrimento veloce chiesto dalla TV: iOS manda l'audio accelerato, che non si fa sentire.
+    @Volatile private var scanMuted = false
+    // Pacchetti scartati perché la coda era piena (solo dal thread di rete), per il log di fine stream.
+    @Volatile private var dropped = 0L
+    // Frame PCM scritti nell'AudioTrack corrente (thread audio), per stimare l'audio non ancora suonato.
+    @Volatile private var framesWritten = 0L
 
     /** csd = null: PCM 16 bit, nessun decoder. */
     private class Config(val csd: ByteArray?, val profile: Int, val music: Boolean)
@@ -75,6 +87,7 @@ class AudioRenderer(context: Context) : NativeBridge.AudioSink {
             stopWorkerLocked()
             queue.clear()
             flushRequested.set(false)
+            dropped = 0
             maxBacklog = if (config.music) BACKLOG_MUSIC else BACKLOG_MIRRORING
             requestFocusLocked()
             worker = Thread({ run(config) }, "iRPlay-Audio").apply {
@@ -97,9 +110,11 @@ class AudioRenderer(context: Context) : NativeBridge.AudioSink {
      * è un po' più veloce la coda cresce lentamente, e con lei il ritardo. Oltre maxBacklog si
      * scartano i pacchetti più vecchi, così la latenza resta limitata.
      */
-    override fun onAudioFrame(data: ByteArray) {
-        while (queue.size >= maxBacklog) queue.poll()
-        queue.offer(data)
+    override fun onAudioFrame(data: ByteArray, dueMs: Long) {
+        while (queue.size >= maxBacklog) {
+            if (queue.poll() != null) dropped++
+        }
+        queue.offer(Frame(data, dueMs))
     }
 
     override fun onAudioFlush() {
@@ -113,6 +128,29 @@ class AudioRenderer(context: Context) : NativeBridge.AudioSink {
     }
 
     fun release() = onAudioStopped()
+
+    /** Audio scritto nell'AudioTrack ma non ancora suonato, in ms (thread audio). */
+    private fun trackPendingMs(t: AudioTrack): Long = try {
+        val head = t.playbackHeadPosition.toLong() and 0xFFFFFFFFL
+        (framesWritten - head).coerceAtLeast(0) * 1000 / t.sampleRate.coerceAtLeast(1)
+    } catch (_: IllegalStateException) {
+        0
+    }
+
+    /**
+     * Musica: iOS manda ogni pacchetto circa 1,8 s prima dell'istante in cui va suonato. Si
+     * aspetta finché, sommato all'audio già nell'AudioTrack, il pacchetto uscirebbe in orario.
+     * false se nel frattempo è arrivato un FLUSH (pausa, salto): il pacchetto va scartato.
+     */
+    private fun waitUntilDue(frame: Frame, t: AudioTrack): Boolean {
+        if (frame.dueMs <= 0) return true
+        while (true) {
+            if (flushRequested.get()) return false
+            val wait = frame.dueMs - SystemClock.uptimeMillis() - trackPendingMs(t)
+            if (wait <= 0) return true
+            Thread.sleep(minOf(wait, MAX_WAIT_STEP_MS))   // a passi brevi: un FLUSH non aspetta
+        }
+    }
 
     // ------------------------------------------------------------ thread "iRPlay-Audio"
 
@@ -130,6 +168,7 @@ class AudioRenderer(context: Context) : NativeBridge.AudioSink {
                 }
             }
             var out = createTrack(SAMPLE_RATE, CHANNELS, config.music)
+            framesWritten = 0
             track = out
             applyVolume()
             out.play()
@@ -141,12 +180,17 @@ class AudioRenderer(context: Context) : NativeBridge.AudioSink {
                     // altrimenti si sentirebbe ancora mezzo secondo del punto precedente.
                     out.pause()
                     out.flush()
+                    framesWritten = 0   // flush azzera anche playbackHeadPosition
                     codec?.flush()
                     out.play()
                 }
-                val frame = queue.poll(POLL_MS, TimeUnit.MILLISECONDS)
+                val polled = queue.poll(POLL_MS, TimeUnit.MILLISECONDS)
+                val frame = if (polled != null && waitUntilDue(polled, out)) polled.data else null
                 if (codec == null) {
-                    if (frame != null && frame.isNotEmpty()) out.write(frame, 0, frame.size, AudioTrack.WRITE_BLOCKING)
+                    if (frame != null && frame.isNotEmpty()) {
+                        val n = out.write(frame, 0, frame.size, AudioTrack.WRITE_BLOCKING)
+                        if (n > 0) framesWritten += n / (2 * out.channelCount)
+                    }
                     continue
                 }
                 if (frame != null) {
@@ -169,7 +213,8 @@ class AudioRenderer(context: Context) : NativeBridge.AudioSink {
                         if (pcm != null && info.size > 0) {
                             pcm.position(info.offset)
                             pcm.limit(info.offset + info.size)
-                            out.write(pcm, info.size, AudioTrack.WRITE_BLOCKING)
+                            val n = out.write(pcm, info.size, AudioTrack.WRITE_BLOCKING)
+                            if (n > 0) framesWritten += n / (2 * out.channelCount)
                         }
                         codec.releaseOutputBuffer(outIndex, false)
                     } else if (outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
@@ -181,6 +226,7 @@ class AudioRenderer(context: Context) : NativeBridge.AudioSink {
                         if (rate != out.sampleRate || ch != out.channelCount) {
                             out.release()
                             out = createTrack(rate, ch, config.music)
+                            framesWritten = 0
                             track = out
                             applyVolume()
                             out.play()
@@ -196,6 +242,7 @@ class AudioRenderer(context: Context) : NativeBridge.AudioSink {
             Log.e(TAG, "Pipeline audio interrotta: ${e.javaClass.simpleName}")
         } finally {
             track?.let {
+                Log.i(TAG, "Audio: ${it.sampleRate} Hz, underrun ${it.underrunCount}, pacchetti scartati $dropped")
                 try {
                     it.pause()
                     it.flush()
@@ -236,8 +283,13 @@ class AudioRenderer(context: Context) : NativeBridge.AudioSink {
             .build()
     }
 
+    fun setScanMuted(muted: Boolean) {
+        scanMuted = muted
+        applyVolume()
+    }
+
     private fun applyVolume() {
-        val v = gain * focusFactor
+        val v = if (scanMuted) 0f else gain * focusFactor
         try {
             track?.setVolume(v)
         } catch (_: IllegalStateException) {
@@ -291,6 +343,7 @@ class AudioRenderer(context: Context) : NativeBridge.AudioSink {
         private const val BACKLOG_MIRRORING = 10           // 10 frame ELD da 480 campioni = ~109 ms
         private const val BACKLOG_MUSIC = 512              // 512 pacchetti ALAC da 352 campioni = ~4 s
         private const val POLL_MS = 20L
+        private const val MAX_WAIT_STEP_MS = 10L
         private const val INPUT_TIMEOUT_US = 10_000L
         private const val JOIN_TIMEOUT_MS = 500L
         private const val MIN_DB = -30f

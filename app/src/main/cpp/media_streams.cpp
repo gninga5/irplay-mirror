@@ -46,6 +46,9 @@ namespace irplay {
         }
         uint64_t le64(const uint8_t* p) { return uint64_t{le32(p)} | (uint64_t{le32(p + 4)} << 32); }
         uint16_t be16(const uint8_t* p) { return static_cast<uint16_t>((p[0] << 8) | p[1]); }
+        uint32_t be32(const uint8_t* p) {
+            return (uint32_t{p[0]} << 24) | (uint32_t{p[1]} << 16) | (uint32_t{p[2]} << 8) | uint32_t{p[3]};
+        }
 
         int64_t ntpToUs(uint64_t ntp) {
             const uint64_t sec = ntp >> 32, frac = ntp & 0xFFFFFFFFu;
@@ -291,6 +294,9 @@ namespace irplay {
     namespace {
         constexpr int64_t kGapWaitMs = 150;    // attesa di un pacchetto mancante prima di saltarlo
         constexpr uint16_t kMaxResend = 64;
+        // Anticipo con cui iOS manda l'audio (latenza dichiarata nei pacchetti di sincronizzazione:
+        // 77175 campioni = 1750 ms). Usato solo finché la prima sincronizzazione non arriva.
+        constexpr int64_t kAssumedLeadMs = 1750;
     }
 
     AudioStream::AudioStream(SessionSink& sink, const sockaddr_in6& peer, const uint8_t sessionKey[16],
@@ -329,6 +335,9 @@ namespace irplay {
     void AudioStream::stop() {
         if (!running_.exchange(false) && !thread_.joinable()) return;
         if (thread_.joinable()) thread_.join();   // il thread esce entro un ciclo di poll (250 ms)
+        LOGI("Audio: %llu pacchetti riprodotti, %llu persi, %llu ritrasmissioni chieste",
+             static_cast<unsigned long long>(statDelivered_), static_cast<unsigned long long>(statLost_),
+             static_cast<unsigned long long>(statResendAsked_));
         if (dataFd_ >= 0) ::close(dataFd_);
         if (controlFd_ >= 0) ::close(controlFd_);
         dataFd_ = controlFd_ = -1;
@@ -337,16 +346,45 @@ namespace irplay {
 
     void AudioStream::requestFlush(int nextSeq) { flushSeq_ = nextSeq < 0 ? -1 : (nextSeq & 0xFFFF); }
 
-    void AudioStream::deliver(const uint8_t* payload, size_t len) {
+    int64_t AudioStream::dueMs(uint32_t rtp) const {
+        uint32_t refRtp;
+        int64_t refAt;
+        if (haveSync_.load()) {
+            refRtp = syncRtp_.load();
+            refAt = syncAtMs_.load();
+        } else if (haveFirst_.load()) {
+            refRtp = firstRtp_.load();
+            refAt = firstAtMs_.load() + kAssumedLeadMs;
+        } else {
+            return 0;
+        }
+        const auto ahead = static_cast<int32_t>(rtp - refRtp);   // campioni, modulo 2^32
+        // Oltre 10 s in un senso o nell'altro il riferimento non vale per questo frame.
+        if (ahead <= -10 * 44100 || ahead >= 10 * 44100) return 0;
+        return refAt + int64_t{ahead} * 1000 / 44100;
+    }
+
+    void AudioStream::deliver(const uint8_t* payload, size_t len, uint32_t rtp) {
+        ++statDelivered_;
+        // Musica: iOS manda l'audio con circa 1,8 s di anticipo e vuole che ogni pacchetto esca
+        // all'istante indicato dalla sincronizzazione. Suonarlo appena arriva metterebbe la TV
+        // avanti rispetto all'iPhone: alla pausa si sentirebbe (e si vedrebbe) quasi 2 s in più,
+        // e alla ripresa iOS ripartirebbe da prima. Duplicazione schermo: subito (dueMs 0).
+        if (music_ && !haveFirst_.load()) {
+            firstAtMs_ = monotonicMs();
+            firstRtp_ = rtp;
+            haveFirst_ = true;
+        }
+        const int64_t due = music_ ? dueMs(rtp) : 0;
         if (codecType_ == kCodecAlac) {
-            if (alac_->decode(payload, len, pcm_)) sink_.onAudioFrame(pcm_.data(), pcm_.size());
+            if (alac_->decode(payload, len, pcm_)) sink_.onAudioFrame(pcm_.data(), pcm_.size(), due);
         } else if (codecType_ == kCodecPcm) {
             // L16 di RTP è big-endian; AudioTrack vuole little-endian.
             pcm_.assign(payload, payload + (len & ~size_t{1}));
             for (size_t i = 0; i + 1 < pcm_.size(); i += 2) std::swap(pcm_[i], pcm_[i + 1]);
-            sink_.onAudioFrame(pcm_.data(), pcm_.size());
+            sink_.onAudioFrame(pcm_.data(), pcm_.size(), due);
         } else {
-            sink_.onAudioFrame(payload, len);   // AAC: lo decodifica MediaCodec in Kotlin
+            sink_.onAudioFrame(payload, len, due);   // AAC: lo decodifica MediaCodec in Kotlin
         }
     }
 
@@ -367,7 +405,7 @@ namespace irplay {
                  reinterpret_cast<const sockaddr*>(&remoteControl_), sizeof remoteControl_);
     }
 
-    void AudioStream::insert(uint16_t seq, const uint8_t* payload, size_t len) {
+    void AudioStream::insert(uint16_t seq, uint32_t rtp, const uint8_t* payload, size_t len) {
         if (!haveSeq_) { haveSeq_ = true; expected_ = seq; }
         const auto delta = static_cast<int16_t>(seq - expected_);
         if (delta < 0) {
@@ -382,6 +420,7 @@ namespace irplay {
         if (slot.used) return;                  // stesso pacchetto ricevuto due volte
         slot.used = true;
         slot.seq = seq;
+        slot.rtp = rtp;
         slot.data.assign(payload, payload + len);
         ++buffered_;
     }
@@ -390,7 +429,7 @@ namespace irplay {
         for (;;) {
             Slot& slot = slots_[expected_ % kSlots];
             if (slot.used && slot.seq == expected_) {
-                deliver(slot.data.data(), slot.data.size());
+                deliver(slot.data.data(), slot.data.size(), slot.rtp);
                 slot.used = false;
                 slot.data.clear();
                 --buffered_;
@@ -410,9 +449,11 @@ namespace irplay {
                 gapSinceMs_ = now;
                 const auto missing = static_cast<uint16_t>(next - expected_);
                 requestResend(expected_, missing < kMaxResend ? missing : kMaxResend);
+                ++statResendAsked_;
                 return;
             }
             if (now - gapSinceMs_ < kGapWaitMs) return;
+            statLost_ += static_cast<uint16_t>(next - expected_);
             expected_ = next;                   // non è arrivato in tempo: si salta (un breve silenzio)
             gapSinceMs_ = 0;
         }
@@ -421,13 +462,14 @@ namespace irplay {
     void AudioStream::onRtp(uint8_t* buf, size_t len) {
         if (len <= 12 || (buf[0] & 0xC0) != 0x80 || (buf[1] & 0x7F) != 0x60) return;
         const uint16_t seq = be16(buf + 2);
+        const uint32_t rtp = be32(buf + 4);
         activity_ = monotonicMs();
         uint8_t* payload = buf + 12;
         const size_t n = len - 12;
         decryptor_.decrypt(payload, n);
 
         if (music_) {
-            insert(seq, payload, n);
+            insert(seq, rtp, payload, n);
             drain(monotonicMs());
             return;
         }
@@ -436,10 +478,11 @@ namespace irplay {
         if (haveSeq_) {
             const auto delta = static_cast<int16_t>(seq - lastSeq_);
             if (delta <= 0 && delta > -1000) return;
+            if (delta > 1 && delta < 1000) statLost_ += static_cast<uint64_t>(delta - 1);
         }
         haveSeq_ = true;
         lastSeq_ = seq;
-        deliver(payload, n);
+        deliver(payload, n, rtp);
     }
 
     void AudioStream::run() {
@@ -448,6 +491,7 @@ namespace irplay {
             const int pending = flushSeq_.exchange(-2);
             if (pending != -2) {
                 resetBuffer();
+                haveFirst_ = false;   // dopo un salto il primo pacchetto è un nuovo riferimento
                 if (pending >= 0) { expected_ = static_cast<uint16_t>(pending); haveSeq_ = true; }
                 else haveSeq_ = false;
                 sink_.onAudioFlush();
@@ -468,7 +512,13 @@ namespace irplay {
                         // Ritrasmissione: 4 byte di intestazione e poi il pacchetto RTP originale.
                         onRtp(buf + 4, static_cast<size_t>(n) - 4);
                     }
-                    // 0x54 (sincronizzazione): non serve, l'audio è riprodotto appena pronto.
+                    else if (n >= 20 && (buf[1] & 0x7F) == 0x54 && music_) {
+                        // Sincronizzazione (circa una al secondo): il frame RTP in buf[4..7] è
+                        // quello che iOS considera in uscita adesso. Da qui l'orario di ogni pacchetto.
+                        syncAtMs_ = monotonicMs();
+                        syncRtp_ = be32(buf + 4);
+                        haveSync_ = true;
+                    }
                 }
             }
             if (music_ && buffered_ > 0) drain(monotonicMs());
@@ -568,6 +618,8 @@ namespace irplay {
             mirror_.reset();
         }
     }
+
+    int64_t Session::audioDueMs(uint32_t rtp) const { return audio_ ? audio_->dueMs(rtp) : 0; }
 
     void Session::flushAudio(int nextSeq) {
         if (audio_) audio_->requestFlush(nextSeq);

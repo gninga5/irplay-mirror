@@ -2,7 +2,8 @@
  * jni_bridge.cpp
  * Scopo: unico punto di contatto tra il motore C++ e Kotlin (classe com.irplay.tv.core.NativeBridge).
  *
- * Kotlin -> C++: startServer, stopServer, stopSession, ed25519PublicKey.
+ * Kotlin -> C++: startServer, stopServer, stopSession, ed25519PublicKey,
+ *                updateMediaPlayback, stopMedia (AirPlay video).
  * C++ -> Kotlin: JavaSink implementa SessionSink chiamando i metodi statici di NativeBridge.
  *
  * Trabocchetti JNI gestiti qui:
@@ -34,9 +35,11 @@ namespace {
     JavaVM* gVm = nullptr;
     jclass gBridge = nullptr;   // global ref
     jmethodID gOnSessionStarted, gOnSessionEnded, gOnVideoStarted, gOnVideoStopped, gOnVideoConfig,
-            gOnVideoFrame, gOnAudioStarted, gOnAudioStopped, gOnAudioFrame, gOnVolume,
+            gOnVideoFrame, gOnAudioStarted, gOnAudioStopped, gOnAudioFrame, gOnVolume, gOnRemoteControl,
             gOnPinRequested, gOnPinDismissed, gOnClientTrusted,
-            gOnAudioFlush, gOnMetadata, gOnArtwork, gOnProgress;
+            gOnAudioFlush, gOnMetadata, gOnArtwork, gOnProgress,
+            gOnMediaPlay, gOnMediaRate, gOnMediaScrub, gOnMediaStop;
+    jclass gByteArrayClass = nullptr;   // global ref a byte[], per gli array di playlist
 
     std::mutex gServerMutex;                       // start e stop possono arrivare da thread Kotlin diversi
     std::unique_ptr<irplay::AirPlayServer> gServer;
@@ -115,12 +118,12 @@ namespace {
         void onAudioStarted(int codecType) override { callVoid(gOnAudioStarted, static_cast<jint>(codecType)); }
         void onAudioStopped() override { callVoid(gOnAudioStopped); }
 
-        void onAudioFrame(const uint8_t* data, size_t len) override {
+        void onAudioFrame(const uint8_t* data, size_t len, int64_t dueMs) override {
             JNIEnv* env = currentEnv();
             if (!env) return;
             jbyteArray a = toJava(env, data, len);
             if (a == nullptr) { clearException(env); return; }
-            env->CallStaticVoidMethod(gBridge, gOnAudioFrame, a);
+            env->CallStaticVoidMethod(gBridge, gOnAudioFrame, a, static_cast<jlong>(dueMs));
             env->DeleteLocalRef(a);
             clearException(env);
         }
@@ -129,6 +132,19 @@ namespace {
             JNIEnv* env = currentEnv();
             if (!env) return;
             env->CallStaticVoidMethod(gBridge, gOnVolume, static_cast<jfloat>(db));
+            clearException(env);
+        }
+
+        void onRemoteControl(const std::string& dacpId, const std::string& activeRemote,
+                             const std::string& peerAddr) override {
+            JNIEnv* env = currentEnv();
+            if (!env) return;
+            // Tutti ASCII già controllati (esadecimale, cifre, indirizzo IP): modified UTF-8 coincide.
+            jstring a = env->NewStringUTF(dacpId.c_str());
+            jstring b = env->NewStringUTF(activeRemote.c_str());
+            jstring c = env->NewStringUTF(peerAddr.c_str());
+            if (a && b && c) env->CallStaticVoidMethod(gBridge, gOnRemoteControl, a, b, c);
+            for (jstring x : {a, b, c}) if (x) env->DeleteLocalRef(x);
             clearException(env);
         }
 
@@ -167,8 +183,8 @@ namespace {
             clearException(env);
         }
 
-        void onProgress(int64_t positionMs, int64_t durationMs) override {
-            callVoid(gOnProgress, static_cast<jlong>(positionMs), static_cast<jlong>(durationMs));
+        void onProgress(int64_t positionMs, int64_t durationMs, int64_t atMs) override {
+            callVoid(gOnProgress, static_cast<jlong>(positionMs), static_cast<jlong>(durationMs), static_cast<jlong>(atMs));
         }
 
         void onClientTrusted(const uint8_t publicKey[32]) override {
@@ -180,6 +196,42 @@ namespace {
             env->DeleteLocalRef(a);
             clearException(env);
         }
+
+        void onMediaPlay(const std::string& url, double startSec, double startFraction,
+                         const std::vector<std::pair<std::string, std::string>>& playlists) override {
+            JNIEnv* env = currentEnv();
+            if (!env) return;
+            // Testi come byte UTF-8 per lo stesso motivo dei metadati: gli URL sono ASCII, ma le
+            // playlist possono contenere nomi di tracce in qualsiasi lingua.
+            auto bytes = [&](const std::string& s) { return toJava(env, reinterpret_cast<const uint8_t*>(s.data()), s.size()); };
+            const auto n = static_cast<jsize>(playlists.size());
+            jbyteArray u = bytes(url);
+            jobjectArray keys = env->NewObjectArray(n, gByteArrayClass, nullptr);
+            jobjectArray bodies = env->NewObjectArray(n, gByteArrayClass, nullptr);
+            bool ok = u && keys && bodies;
+            for (jsize i = 0; ok && i < n; ++i) {
+                jbyteArray k = bytes(playlists[static_cast<size_t>(i)].first);
+                jbyteArray b = bytes(playlists[static_cast<size_t>(i)].second);
+                ok = k && b;
+                if (ok) {
+                    env->SetObjectArrayElement(keys, i, k);
+                    env->SetObjectArrayElement(bodies, i, b);
+                }
+                if (k) env->DeleteLocalRef(k);   // fino a 49 coppie: i local ref vanno liberati nel ciclo
+                if (b) env->DeleteLocalRef(b);
+            }
+            if (ok) {
+                env->CallStaticVoidMethod(gBridge, gOnMediaPlay, u, static_cast<jdouble>(startSec),
+                                          static_cast<jdouble>(startFraction), keys, bodies);
+            }
+            for (jobject o : {static_cast<jobject>(u), static_cast<jobject>(keys), static_cast<jobject>(bodies)}) {
+                if (o) env->DeleteLocalRef(o);
+            }
+            clearException(env);
+        }
+        void onMediaRate(float rate) override { callVoid(gOnMediaRate, static_cast<jfloat>(rate)); }
+        void onMediaScrub(double positionSec) override { callVoid(gOnMediaScrub, static_cast<jdouble>(positionSec)); }
+        void onMediaStop() override { callVoid(gOnMediaStop); }
 
     private:
         template <typename... Args>
@@ -235,6 +287,10 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void*) {
     if (local == nullptr) { env->ExceptionClear(); return JNI_ERR; }
     gBridge = static_cast<jclass>(env->NewGlobalRef(local));
     env->DeleteLocalRef(local);
+    jclass bytes = env->FindClass("[B");
+    if (bytes == nullptr) { env->ExceptionClear(); return JNI_ERR; }
+    gByteArrayClass = static_cast<jclass>(env->NewGlobalRef(bytes));
+    env->DeleteLocalRef(bytes);
 
     const bool ok = resolve(env, gOnSessionStarted, "onSessionStarted", "([B)V")
                     && resolve(env, gOnSessionEnded, "onSessionEnded", "(I)V")
@@ -244,15 +300,20 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void*) {
                     && resolve(env, gOnVideoFrame, "onVideoFrame", "([BJZ)V")
                     && resolve(env, gOnAudioStarted, "onAudioStarted", "(I)V")
                     && resolve(env, gOnAudioStopped, "onAudioStopped", "()V")
-                    && resolve(env, gOnAudioFrame, "onAudioFrame", "([B)V")
+                    && resolve(env, gOnAudioFrame, "onAudioFrame", "([BJ)V")
                     && resolve(env, gOnVolume, "onVolume", "(F)V")
+                    && resolve(env, gOnRemoteControl, "onRemoteControl", "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V")
                     && resolve(env, gOnPinRequested, "onPinRequested", "(Ljava/lang/String;)V")
                     && resolve(env, gOnPinDismissed, "onPinDismissed", "()V")
                     && resolve(env, gOnClientTrusted, "onClientTrusted", "([B)V")
                     && resolve(env, gOnAudioFlush, "onAudioFlush", "()V")
                     && resolve(env, gOnMetadata, "onMetadata", "([B[B[B)V")
                     && resolve(env, gOnArtwork, "onArtwork", "([B)V")
-                    && resolve(env, gOnProgress, "onProgress", "(JJ)V");
+                    && resolve(env, gOnProgress, "onProgress", "(JJJ)V")
+                    && resolve(env, gOnMediaPlay, "onMediaPlay", "([BDD[[B[[B)V")
+                    && resolve(env, gOnMediaRate, "onMediaRate", "(F)V")
+                    && resolve(env, gOnMediaScrub, "onMediaScrub", "(D)V")
+                    && resolve(env, gOnMediaStop, "onMediaStop", "()V");
     return ok ? JNI_VERSION_1_6 : JNI_ERR;
 }
 
@@ -322,6 +383,24 @@ JNIEXPORT void JNICALL
 Java_com_irplay_tv_core_NativeBridge_stopSession(JNIEnv*, jclass) {
     std::lock_guard<std::mutex> lock(gServerMutex);
     if (gServer) gServer->stopActiveSession();
+}
+
+// Stato di ExoPlayer: posizione e durata in secondi, rate 0/1, state = AirPlayServer::MediaState.
+// Valori fuori intervallo vengono scartati: arrivano da Kotlin ma finiscono in risposte a iOS.
+JNIEXPORT void JNICALL
+Java_com_irplay_tv_core_NativeBridge_updateMediaPlayback(JNIEnv*, jclass, jdouble position, jdouble duration,
+                                                         jfloat rate, jint state) {
+    if (state < 0 || state > 4) return;
+    std::lock_guard<std::mutex> lock(gServerMutex);
+    if (gServer) {
+        gServer->updateMediaPlayback(position, duration, rate, static_cast<irplay::AirPlayServer::MediaState>(state));
+    }
+}
+
+JNIEXPORT void JNICALL
+Java_com_irplay_tv_core_NativeBridge_stopMedia(JNIEnv*, jclass) {
+    std::lock_guard<std::mutex> lock(gServerMutex);
+    if (gServer) gServer->stopMedia();
 }
 
 // Calcola la chiave pubblica Ed25519 dal seed (RFC 8032), senza conservare il segreto.

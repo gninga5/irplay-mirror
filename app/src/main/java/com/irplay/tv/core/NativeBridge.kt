@@ -37,7 +37,8 @@ object NativeBridge {
         /** codecType: 1 = PCM 16 bit (ALAC già decodificato in C++), 4 = AAC-LC, 8 = AAC-ELD. */
         fun onAudioStarted(codecType: Int)
         fun onAudioStopped()
-        fun onAudioFrame(data: ByteArray)
+        /** dueMs: istante di uscita (SystemClock.uptimeMillis, stesso orologio del C++); 0 = subito. */
+        fun onAudioFrame(data: ByteArray, dueMs: Long)
         fun onVolume(db: Float)
         /** Pausa o salto nel brano: l'audio in coda va scartato. */
         fun onAudioFlush()
@@ -48,7 +49,13 @@ object NativeBridge {
         fun onMetadata(title: String, artist: String, album: String)
         /** JPEG o PNG; array vuoto = nessuna copertina. */
         fun onArtwork(image: ByteArray)
-        fun onProgress(positionMs: Long, durationMs: Long)
+        /** atMs: istante (SystemClock.uptimeMillis) in cui la posizione si sente; 0 = adesso. */
+        fun onProgress(positionMs: Long, durationMs: Long, atMs: Long)
+    }
+
+    /** Dati del telecomando DACP dell'iPhone (vedi DacpRemote). activeRemote è un token: mai nel log. */
+    interface RemoteControlListener {
+        fun onRemoteControl(dacpId: String, activeRemote: String, peerAddr: String)
     }
 
     /** Eventi del PIN (pair-pin-start / pair-setup-pin). */
@@ -66,6 +73,15 @@ object NativeBridge {
         fun onVideoStopped()
     }
 
+    /** AirPlay video: l'iPhone passa un indirizzo e la TV lo riproduce (VideoActivity). */
+    interface MediaListener {
+        /** playlists: URI irplay-hls:// -> testo m3u8 (vuota per gli indirizzi http diretti). */
+        fun onMediaPlay(url: String, startSec: Double, startFraction: Double, playlists: Map<String, ByteArray>)
+        fun onMediaRate(rate: Float)
+        fun onMediaScrub(positionSec: Double)
+        fun onMediaStop()
+    }
+
     const val END_TEARDOWN = 0
     const val END_DISCONNECTED = 1
     const val END_WATCHDOG = 2
@@ -76,6 +92,8 @@ object NativeBridge {
     @Volatile var sessionListener: SessionListener? = null
     @Volatile var pinListener: PinListener? = null
     @Volatile var nowPlayingListener: NowPlayingListener? = null
+    @Volatile var mediaListener: MediaListener? = null
+    @Volatile var remoteControlListener: RemoteControlListener? = null
 
     /**
      * Calcola la chiave pubblica Ed25519 (32 byte) da un seed di 32 byte.
@@ -115,6 +133,18 @@ object NativeBridge {
     /** Chiude la sessione di mirroring in corso (tasto BACK). Non blocca. */
     @JvmStatic
     external fun stopSession()
+
+    /**
+     * Stato del lettore AirPlay video: posizione e durata in secondi, rate (0 = pausa),
+     * state 1 caricamento, 2 riproduzione, 3 pausa, 4 finito. Può inviare un evento a iOS
+     * (al massimo 200 ms): da chiamare fuori dal main thread.
+     */
+    @JvmStatic
+    external fun updateMediaPlayback(positionSec: Double, durationSec: Double, rate: Float, state: Int)
+
+    /** Video fermato dalla TV: avvisa l'iPhone. Stesso vincolo di thread di updateMediaPlayback. */
+    @JvmStatic
+    external fun stopMedia()
 
     // ------------------------------------------------------------ callback dal C++
 
@@ -165,7 +195,7 @@ object NativeBridge {
     fun onAudioStopped() = guarded("audio") { audioSink?.onAudioStopped() }
 
     @JvmStatic
-    fun onAudioFrame(data: ByteArray) = guarded("frame audio") { audioSink?.onAudioFrame(data) }
+    fun onAudioFrame(data: ByteArray, dueMs: Long) = guarded("frame audio") { audioSink?.onAudioFrame(data, dueMs) }
 
     @JvmStatic
     fun onVolume(db: Float) = guarded("volume") { audioSink?.onVolume(db) }
@@ -184,8 +214,31 @@ object NativeBridge {
     fun onArtwork(image: ByteArray) = guarded("copertina") { nowPlayingListener?.onArtwork(image) }
 
     @JvmStatic
-    fun onProgress(positionMs: Long, durationMs: Long) = guarded("avanzamento") {
-        nowPlayingListener?.onProgress(positionMs, durationMs)
+    fun onProgress(positionMs: Long, durationMs: Long, atMs: Long) = guarded("avanzamento") {
+        nowPlayingListener?.onProgress(positionMs, durationMs, atMs)
+    }
+
+    @JvmStatic
+    fun onMediaPlay(url: ByteArray, startSec: Double, startFraction: Double, keys: Array<ByteArray>, bodies: Array<ByteArray>) =
+        guarded("video AirPlay") {
+            val n = minOf(keys.size, bodies.size)
+            val playlists = HashMap<String, ByteArray>(n * 2)
+            for (i in 0 until n) playlists[String(keys[i], Charsets.UTF_8)] = bodies[i]
+            mediaListener?.onMediaPlay(String(url, Charsets.UTF_8), startSec, startFraction, playlists)
+        }
+
+    @JvmStatic
+    fun onMediaRate(rate: Float) = guarded("video AirPlay") { mediaListener?.onMediaRate(rate) }
+
+    @JvmStatic
+    fun onMediaScrub(positionSec: Double) = guarded("video AirPlay") { mediaListener?.onMediaScrub(positionSec) }
+
+    @JvmStatic
+    fun onMediaStop() = guarded("video AirPlay") { mediaListener?.onMediaStop() }
+
+    @JvmStatic
+    fun onRemoteControl(dacpId: String, activeRemote: String, peerAddr: String) = guarded("telecomando") {
+        remoteControlListener?.onRemoteControl(dacpId, activeRemote, peerAddr)
     }
 
     @JvmStatic

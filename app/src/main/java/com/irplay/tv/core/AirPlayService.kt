@@ -40,11 +40,13 @@ import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.net.wifi.WifiManager
 import android.os.IBinder
+import android.os.SystemClock
 import android.util.Log
 import java.io.ByteArrayOutputStream
 import com.irplay.tv.R
 import com.irplay.tv.audio.AudioRenderer
 import com.irplay.tv.ui.MainActivity
+import com.irplay.tv.ui.VideoActivity
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -63,6 +65,10 @@ class AirPlayService : Service() {
     private val registrations = mutableListOf<NsdManager.RegistrationListener>()
     private var started = false
     private var audio: AudioRenderer? = null
+    @Volatile private var pausedByTvAt = Long.MIN_VALUE / 2
+    @Volatile private var lastSoundAt = 0L
+    @Volatile private var pcmStream = false
+    @Volatile private var resumeCheckPending = false
     private var identity: DeviceIdentity? = null
     private var deviceName = ""
     // Cambio di nome richiesto durante una sessione: applicato quando finisce, per non
@@ -116,11 +122,31 @@ class AirPlayService : Service() {
                 }
 
                 audio = AudioRenderer(applicationContext)
+                val dacp = DacpRemote(applicationContext)
+                dacp.onPausedByTv = {
+                    pausedByTvAt = ReceiverState.elapsedNow()
+                    audio?.onAudioFlush()
+                    markPaused()
+                }
+                dacp.onScanStarted = { audio?.setScanMuted(true) }
+                dacp.onScanEnded = {
+                    // L'audio accelerato già ricevuto (circa 1,8 s) non va suonato: si scarta e si
+                    // riparte dal punto nuovo come dopo una pausa (ripresa al primo suono vero).
+                    audio?.onAudioFlush()
+                    markPaused()
+                    audio?.setScanMuted(false)
+                }
+                remote = dacp
+                NativeBridge.remoteControlListener = object : NativeBridge.RemoteControlListener {
+                    override fun onRemoteControl(dacpId: String, activeRemote: String, peerAddr: String) =
+                        dacp.attach(dacpId, activeRemote, peerAddr)
+                }
                 NativeBridge.audioSink = audioSink
                 NativeBridge.nowPlayingListener = nowPlayingListener
                 getSystemService(ConnectivityManager::class.java)?.registerDefaultNetworkCallback(networkCallback)
                 NativeBridge.sessionListener = sessionListener
                 NativeBridge.pinListener = pinListener
+                NativeBridge.mediaListener = mediaListener
                 this@AirPlayService.identity = identity
                 publish()
             }
@@ -179,14 +205,19 @@ class AirPlayService : Service() {
         registrations.clear()
         NativeBridge.sessionListener = null
         NativeBridge.pinListener = null
+        NativeBridge.mediaListener = null
+        MediaCast.clear()
         NativeBridge.nowPlayingListener = null
         runCatching { getSystemService(ConnectivityManager::class.java)?.unregisterNetworkCallback(networkCallback) }
         ReceiverState.setPin(null)
         ReceiverState.clearNowPlaying()
         NativeBridge.stopServer()     // prima si ritira l'annuncio, poi si chiudono le connessioni
         NativeBridge.audioSink = null
+        NativeBridge.remoteControlListener = null
         audio?.release()
         audio = null
+        remote?.release()
+        remote = null
         ReceiverState.set(ReceiverState.Status.Starting)
         multicastLock?.takeIf { it.isHeld }?.release()
         multicastLock = null
@@ -252,6 +283,7 @@ class AirPlayService : Service() {
         override fun onSessionEnded(reason: Int) {
             Log.i(TAG, "Sessione terminata, motivo $reason")
             clientName = ""
+            remote?.detach()
             ReceiverState.clearNowPlaying()
             ReceiverState.set(ReceiverState.Status.Ready)
             updateNotification(getString(R.string.receiver_waiting))
@@ -265,6 +297,7 @@ class AirPlayService : Service() {
      */
     private val audioSink = object : NativeBridge.AudioSink {
         override fun onAudioStarted(codecType: Int) {
+            pcmStream = codecType == CT_PCM
             audio?.onAudioStarted(codecType)
             val status = ReceiverState.status.value
             if (codecType != CT_AAC_ELD && status is ReceiverState.Status.Connected) {
@@ -285,12 +318,52 @@ class AirPlayService : Service() {
             if (ReceiverState.status.value is ReceiverState.Status.Playing) markPaused()
         }
 
-        override fun onAudioFrame(data: ByteArray) { audio?.onAudioFrame(data) }
+        override fun onAudioFrame(data: ByteArray, dueMs: Long) {
+            audio?.onAudioFrame(data, dueMs)
+            // Durante la pausa iOS continua a mandare pacchetti (silenzio) finché non chiude il
+            // flusso, qualche secondo dopo: la ripresa la segnala solo audio non silenzioso.
+            // Con AAC (non PCM) il contenuto non si vede qui: vale ogni pacchetto.
+            val now = ReceiverState.elapsedNow()
+            val sound = !pcmStream || !isSilent(data)
+            if (sound) lastSoundAt = now
+            // Si guarda all'istante in cui quell'audio esce dagli altoparlanti: se il suono
+            // continua ad arrivare è una ripresa vera, e barra e testo ripartono da lì.
+            if (ReceiverState.nowPlaying.value.paused && !resumeCheckPending &&
+                sound && now - pausedByTvAt > RESUME_GUARD_MS
+            ) {
+                resumeCheckPending = true
+                val lead = if (dueMs > 0) (dueMs - SystemClock.uptimeMillis()).coerceIn(0, MAX_AUDIO_LEAD_MS) else 0
+                val startAt = now + lead
+                scope.launch {
+                    delay(lead.coerceAtLeast(RESUME_CHECK_MIN_MS))
+                    resumeCheckPending = false
+                    val sounding = ReceiverState.elapsedNow() - lastSoundAt < AUDIO_FLOW_MS
+                    if (sounding) {
+                        ReceiverState.updateNowPlaying { if (!it.paused) it else it.copy(progressAtElapsed = startAt, paused = false) }
+                    }
+                }
+            }
+        }
+
         override fun onVolume(db: Float) { audio?.onVolume(db) }
         override fun onAudioFlush() {
             audio?.onAudioFlush()
             markPaused()   // FLUSH = pausa o salto: se è un salto, il prossimo avanzamento lo riattiva
         }
+    }
+
+    /**
+     * PCM 16 bit tutto sotto ~-60 dBFS: i pacchetti di riempimento che iOS manda in pausa.
+     * Si guarda un campione ogni 8 (basta per il silenzio, costa poco: chiamato ~125 volte al secondo).
+     */
+    private fun isSilent(pcm: ByteArray): Boolean {
+        var i = 0
+        while (i + 1 < pcm.size) {
+            val sample = (pcm[i].toInt() and 0xFF) or (pcm[i + 1].toInt() shl 8)
+            if (sample > SILENCE_LEVEL || sample < -SILENCE_LEVEL) return false
+            i += 16
+        }
+        return true
     }
 
     /** Ferma la barra di avanzamento sulla posizione raggiunta. */
@@ -317,11 +390,21 @@ class AirPlayService : Service() {
             ReceiverState.updateNowPlaying { it.copy(artwork = bitmap) }
         }
 
-        override fun onProgress(positionMs: Long, durationMs: Long) {
-            // iOS invia l'avanzamento quando la riproduzione (ri)parte: vale come "non più in pausa".
+        override fun onProgress(positionMs: Long, durationMs: Long, atMs: Long) {
+            // La posizione è dell'orologio di iOS; atMs dice quando quel punto esce dalla TV
+            // (alla ripresa e al cambio brano, circa 1,8 s dopo): la barra parte da lì.
+            // La pausa non si tocca qui: iOS manda l'avanzamento anche subito dopo averla chiesta;
+            // la ripresa la segnala l'audio che torna.
+            val now = ReceiverState.elapsedNow()
+            val at = if (atMs > 0) now + (atMs - SystemClock.uptimeMillis()).coerceIn(-MAX_AUDIO_LEAD_MS, MAX_AUDIO_LEAD_MS) else now
             ReceiverState.updateNowPlaying {
-                it.copy(positionMs = positionMs, durationMs = durationMs,
-                    progressAtElapsed = ReceiverState.elapsedNow(), paused = false)
+                val frozen = it.currentPositionMs(now)
+                // In pausa si tiene la posizione raggiunta, salvo un salto vero (altro brano, scorrimento).
+                if (it.paused && kotlin.math.abs(positionMs - frozen) < PAUSE_JUMP_MS) {
+                    it.copy(durationMs = durationMs)
+                } else {
+                    it.copy(positionMs = positionMs, durationMs = durationMs, progressAtElapsed = at)
+                }
             }
         }
     }
@@ -381,6 +464,47 @@ class AirPlayService : Service() {
      * disattivata: senza vederlo l'utente non può completare l'associazione. Compare sia
      * nell'app sia nella notifica, così è leggibile anche se Android blocca l'apertura.
      */
+    /**
+     * AirPlay video: la richiesta passa a MediaCast e si apre (o si aggiorna) VideoActivity.
+     * L'apertura è sempre forzata, anche con l'apertura automatica spenta: è l'utente ad aver
+     * scelto la TV dal pulsante AirPlay dell'app, e senza schermo il video non si vedrebbe.
+     */
+    private val mediaListener = object : NativeBridge.MediaListener {
+        override fun onMediaPlay(url: String, startSec: Double, startFraction: Double, playlists: Map<String, ByteArray>) {
+            val startMs = if (startSec.isFinite() && startSec > 0) (startSec * 1000).toLong() else 0L
+            val request = MediaCast.newRequest(url, startMs, startFraction, playlists)
+            updateNotification(getString(R.string.receiver_video))
+            val controller = MediaCast.controller
+            if (controller != null && VideoActivity.isVisible) {
+                controller.onMediaRequest(request)
+                return
+            }
+            try {
+                startActivity(
+                    Intent(this@AirPlayService, VideoActivity::class.java).addFlags(
+                        Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                    )
+                )
+            } catch (e: Exception) {
+                Log.w(TAG, "Apertura del lettore non consentita: ${e.javaClass.simpleName}")
+            }
+        }
+
+        override fun onMediaRate(rate: Float) { MediaCast.controller?.onMediaRate(rate) }
+
+        override fun onMediaScrub(positionSec: Double) {
+            if (positionSec.isFinite() && positionSec >= 0) MediaCast.controller?.onMediaScrub((positionSec * 1000).toLong())
+        }
+
+        override fun onMediaStop() {
+            MediaCast.clear()
+            MediaCast.controller?.onMediaStop()
+            scope.launch {
+                if (!ReceiverState.isInSession) updateNotification(getString(R.string.receiver_waiting))
+            }
+        }
+    }
+
     private val pinListener = object : NativeBridge.PinListener {
         override fun onPinRequested(pin: String) {
             ReceiverState.setPin(pin)
@@ -573,6 +697,10 @@ class AirPlayService : Service() {
     }
 
     companion object {
+        /** Telecomando verso l'iPhone durante l'audio AirPlay (null a servizio fermo). */
+        @Volatile var remote: DacpRemote? = null
+            private set
+
         /**
          * Codifica un record TXT come in DNS-SD (RFC 6763 §6.1): ogni voce è "chiave=valore",
          * preceduta da un byte con la sua lunghezza (massimo 255). Stesso formato che
@@ -590,6 +718,13 @@ class AirPlayService : Service() {
         }
 
         private const val TAG = "iRPlay_Service"
+        private const val PAUSE_JUMP_MS = 3000L
+        private const val RESUME_GUARD_MS = 500L
+        private const val MAX_AUDIO_LEAD_MS = 5000L
+        private const val RESUME_CHECK_MIN_MS = 300L
+        private const val AUDIO_FLOW_MS = 300L
+        private const val SILENCE_LEVEL = 32   // ~-60 dBFS su 16 bit
+        private const val CT_PCM = 1
         private const val CHANNEL_ID = "irplay_receiver"
         private const val NOTIFICATION_ID = 1
 
@@ -599,8 +734,10 @@ class AirPlayService : Service() {
         // Feature flags di un ricevitore per mirroring dello schermo (gli stessi di UxPlay).
         // Il bit 27 ("legacy pairing") è attivo: fa usare a iOS il pair-setup/verify
         // Ed25519 che implementeremo, invece del pairing HomeKit di AirPlay 2.
-        private const val FEATURES = 0x5A7FFEE6L
-        // Forma dei TXT "bit 0-31,bit 32-63", come UxPlay: "0x5A7FFEE6,0x0".
+        // Bit 0 (video) e 4 (HLS) attivi: le app con il pulsante AirPlay (YouTube, Safari ...)
+        // passano alla TV l'indirizzo del video invece di duplicare lo schermo.
+        private const val FEATURES = 0x5A7FFEF7L
+        // Forma dei TXT "bit 0-31,bit 32-63", come UxPlay: "0x5A7FFEF7,0x0".
         private val FEATURES_HEX = "0x%X,0x%X".format(FEATURES and 0xFFFFFFFFL, FEATURES ushr 32)
         private const val MODEL = "AppleTV3,2"
         private const val SRCVERS = "220.68"

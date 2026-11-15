@@ -66,6 +66,12 @@
     <string name="np_paused">In pausa</string>
     <string name="np_unknown_title">Audio AirPlay</string>
     <string name="np_source">Da %1$s · premi INDIETRO per interrompere</string>
+    <string name="np_prev">Brano precedente</string>
+    <string name="np_play_pause">Riproduci o metti in pausa</string>
+    <string name="np_next">Brano successivo</string>
+    <string name="np_seek">Posizione nel brano: ◀ ▶ salta di 10 secondi</string>
+    <string name="seek_unavailable">Questa app non permette alla TV di spostarsi nel brano</string>
+    <string name="remote_unavailable">L\'iPhone non accetta comandi dalla TV per questa app</string>
     <string name="np_artwork_description">Copertina dell\'album</string>
     <string name="lyrics_title">Testi delle canzoni</string>
     <string name="lyrics_on">Attivati</string>
@@ -75,4 +81,7 @@
     <string name="licenses_button">Licenze</string>
     <string name="licenses_title">Licenze</string>
     <string name="licenses_hint">Usa le frecce su e giù del telecomando per scorrere.</string>
+    <string name="receiver_video">Video in riproduzione</string>
+    <string name="video_error">Questo video non si può riprodurre sulla TV</string>
+    <string name="video_error_protected">Questo video è protetto e si può riprodurre solo su una Apple TV</string>
 </resources>

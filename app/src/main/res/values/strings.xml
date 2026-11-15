@@ -69,6 +69,12 @@
     <string name="np_paused">Paused</string>
     <string name="np_unknown_title">AirPlay audio</string>
     <string name="np_source">From %1$s · press BACK to stop</string>
+    <string name="np_prev">Previous track</string>
+    <string name="np_play_pause">Play or pause</string>
+    <string name="np_next">Next track</string>
+    <string name="np_seek">Track position: ◀ ▶ skip 10 seconds</string>
+    <string name="seek_unavailable">This app doesn\'t let the TV move through the track</string>
+    <string name="remote_unavailable">The iPhone doesn\'t accept commands from the TV for this app</string>
     <string name="np_artwork_description">Album artwork</string>
     <string name="lyrics_title">Song lyrics</string>
     <string name="lyrics_on">On</string>
@@ -78,4 +84,7 @@
     <string name="licenses_button">Licenses</string>
     <string name="licenses_title">Licenses</string>
     <string name="licenses_hint">Use the up and down arrows on the remote to scroll.</string>
+    <string name="receiver_video">Playing video</string>
+    <string name="video_error">This video can\'t be played on the TV</string>
+    <string name="video_error_protected">This video is copy-protected and can only be played on an Apple TV</string>
 </resources>

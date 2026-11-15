@@ -59,4 +59,10 @@ namespace irplay::plist {
 /** Serializza in formato bplist00. Restituisce nullopt se la struttura supera i limiti del formato scelto. */
     std::optional<Data> toBinary(const Value& root);
 
+/**
+ * Serializza in XML (text/x-apple-plist+xml). Lo usano le risposte e gli eventi dell'AirPlay
+ * video, dove iOS si aspetta il formato testuale. Stringhe con caratteri speciali XML escaped.
+ */
+    std::string toXml(const Value& root);
+
 } // namespace irplay::plist

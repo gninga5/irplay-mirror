@@ -39,6 +39,7 @@ import com.irplay.tv.core.AirPlayService
 import com.irplay.tv.core.AppSettings
 import com.irplay.tv.core.Lyrics
 import com.irplay.tv.core.CodecManager
+import com.irplay.tv.core.DacpRemote
 import com.irplay.tv.core.NativeBridge
 import com.irplay.tv.core.ReceiverState
 import com.irplay.tv.core.TrustedDevices
@@ -78,6 +79,10 @@ class MainActivity : AppCompatActivity() {
         }
         binding.licensesButton.setOnClickListener { startActivity(Intent(this, LicensesActivity::class.java)) }
         binding.autoOpenRow.setOnClickListener { onAutoOpenPressed() }
+        binding.npPrev.setOnClickListener { sendRemote(DacpRemote.Command.PREVIOUS) }
+        binding.npPlayPause.setOnClickListener { sendRemote(DacpRemote.Command.PLAY_PAUSE) }
+        binding.npNext.setOnClickListener { sendRemote(DacpRemote.Command.NEXT) }
+        binding.npSeek.setOnKeyListener { _, keyCode, event -> onSeekKey(keyCode, event) }
 
         AirPlayService.start(this)
         scope.launch { ReceiverState.status.collect { render(it) } }
@@ -91,7 +96,7 @@ class MainActivity : AppCompatActivity() {
                     renderProgress(ReceiverState.nowPlaying.value)
                     renderLyrics()
                 }
-                delay(500)
+                delay(200)   // il testo cambia riga entro 0,2 s dal momento giusto
             }
         }
         scope.launch {
@@ -136,6 +141,21 @@ class MainActivity : AppCompatActivity() {
             NativeBridge.stopSession()
             return true
         }
+        if (ReceiverState.status.value is ReceiverState.Status.Playing) {
+            // Tasti multimediali del telecomando (dove ci sono): stessi comandi dei pulsanti a video.
+            // Frecce e OK restano alla navigazione tra i pulsanti.
+            val command = when (keyCode) {
+                KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_MEDIA_PLAY,
+                KeyEvent.KEYCODE_MEDIA_PAUSE -> DacpRemote.Command.PLAY_PAUSE
+                KeyEvent.KEYCODE_MEDIA_NEXT -> DacpRemote.Command.NEXT
+                KeyEvent.KEYCODE_MEDIA_PREVIOUS -> DacpRemote.Command.PREVIOUS
+                else -> null
+            }
+            if (command != null) {
+                if (event.repeatCount == 0) sendRemote(command)   // tasto tenuto premuto: un solo comando
+                return true
+            }
+        }
         return super.onKeyDown(keyCode, event)
     }
 
@@ -151,7 +171,10 @@ class MainActivity : AppCompatActivity() {
         binding.idlePanel.visibility = if (mirroring || playing) View.GONE else View.VISIBLE
         // Solo musica: niente FLAG_KEEP_SCREEN_ON (sotto); la TV può andare in salvaschermo
         // mentre la musica continua, ed evita di lasciare la copertina fissa su un OLED.
+        val wasPlaying = binding.nowPlayingPanel.visibility == View.VISIBLE
         binding.nowPlayingPanel.visibility = if (playing) View.VISIBLE else View.GONE
+        // All'apertura della schermata del brano il fuoco va su play/pausa: OK funziona subito.
+        if (playing && !wasPlaying) binding.npPlayPause.requestFocus()
         if (playing) binding.npSource.text = getString(R.string.np_source, displayName((status as ReceiverState.Status.Playing).clientName))
         if (status is ReceiverState.Status.Connected || mirroring) {
             window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -247,14 +270,85 @@ class MainActivity : AppCompatActivity() {
         return true
     }
 
+    /** Comando all'app che suona sull'iPhone (audio AirPlay). */
+    private fun sendRemote(command: DacpRemote.Command) {
+        val remote = AirPlayService.remote
+        if (remote != null && remote.isAvailable) remote.send(command)
+        else Toast.makeText(this, R.string.remote_unavailable, Toast.LENGTH_SHORT).show()
+    }
+
     private fun renderNowPlaying(np: ReceiverState.NowPlaying) {
         binding.npTitle.text = np.title.ifBlank { getString(R.string.np_unknown_title) }
         binding.npLabel.setText(if (np.paused) R.string.np_paused else R.string.np_label)
+        binding.npPlayPause.setImageResource(if (np.paused) R.drawable.ic_np_play else R.drawable.ic_np_pause)
         binding.npArtist.text = np.artist
         binding.npAlbum.text = np.album
         binding.npArtwork.setImageBitmap(np.artwork)
         binding.npPlaceholder.visibility = if (np.artwork == null) View.VISIBLE else View.GONE
         renderProgress(np)
+    }
+
+    // ------------------------------------------------------------ spostamento nel brano
+
+    // Salto in preparazione: più pressioni ravvicinate diventano un solo comando all'iPhone.
+    private var seekTargetMs = -1L
+    // Dopo l'invio la barra resta sul punto scelto finché iOS non conferma la nuova posizione.
+    private var seekShownUntil = 0L
+    private val commitSeek = Runnable { sendSeek() }
+
+    private fun onSeekKey(keyCode: Int, event: KeyEvent): Boolean {
+        val step = when (keyCode) {
+            KeyEvent.KEYCODE_DPAD_RIGHT -> SEEK_STEP_MS
+            KeyEvent.KEYCODE_DPAD_LEFT -> -SEEK_STEP_MS
+            else -> return false
+        }
+        if (event.action != KeyEvent.ACTION_DOWN) return true
+        val np = ReceiverState.nowPlaying.value
+        if (np.durationMs <= 0) return true
+        val now = ReceiverState.elapsedNow()
+        val base = if (seekTargetMs >= 0) seekTargetMs else np.currentPositionMs(now)
+        // Mai oltre la fine: un salto lì farebbe partire il brano successivo.
+        seekTargetMs = (base + step).coerceIn(0, (np.durationMs - SEEK_END_MARGIN_MS).coerceAtLeast(0))
+        seekShownUntil = now + SEEK_DEBOUNCE_MS + SEEK_CONFIRM_MS
+        renderProgress(np)
+        binding.npSeek.removeCallbacks(commitSeek)
+        binding.npSeek.postDelayed(commitSeek, SEEK_DEBOUNCE_MS)
+        return true
+    }
+
+    private fun sendSeek() {
+        val target = seekTargetMs
+        if (target < 0) return
+        val remote = AirPlayService.remote
+        if (remote == null || !remote.isAvailable) {
+            seekTargetMs = -1
+            Toast.makeText(this, R.string.remote_unavailable, Toast.LENGTH_SHORT).show()
+            return
+        }
+        val now = ReceiverState.elapsedNow()
+        val from = ReceiverState.nowPlaying.value.currentPositionMs(now)
+        seekShownUntil = now + SEEK_CONFIRM_MS + kotlin.math.abs(target - from) / 2
+        remote.seekBy(from, target - from) { ok ->
+            runOnUiThread {
+                if (!ok) {
+                    seekTargetMs = -1
+                    seekShownUntil = 0
+                    Toast.makeText(this, R.string.seek_unavailable, Toast.LENGTH_SHORT).show()
+                    renderProgress(ReceiverState.nowPlaying.value)
+                }
+            }
+        }
+    }
+
+    /** Posizione da mostrare: il salto scelto finché iOS non lo conferma, poi quella reale. */
+    private fun shownPositionMs(np: ReceiverState.NowPlaying, now: Long): Long {
+        val real = np.currentPositionMs(now)
+        if (seekTargetMs < 0) return real
+        if (now > seekShownUntil || kotlin.math.abs(real - seekTargetMs) < SEEK_CONFIRM_TOLERANCE_MS) {
+            seekTargetMs = -1
+            return real
+        }
+        return seekTargetMs
     }
 
     private fun renderProgress(np: ReceiverState.NowPlaying) {
@@ -264,7 +358,7 @@ class MainActivity : AppCompatActivity() {
             binding.npDuration.text = ""
             return
         }
-        val pos = np.currentPositionMs(ReceiverState.elapsedNow())
+        val pos = shownPositionMs(np, ReceiverState.elapsedNow())
         binding.npProgress.visibility = View.VISIBLE
         binding.npProgress.progress = (pos * 1000 / np.durationMs).toInt()
         binding.npPosition.text = formatTime(pos)
@@ -433,6 +527,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     companion object {
+        private const val SEEK_STEP_MS = 10_000L
+        private const val SEEK_DEBOUNCE_MS = 700L          // pausa tra le pressioni prima dell'invio
+        private const val SEEK_CONFIRM_MS = 3000L          // attesa massima della conferma di iOS
+        private const val SEEK_CONFIRM_TOLERANCE_MS = 2000L
+        private const val SEEK_END_MARGIN_MS = 3000L
         /** Letto dal servizio per decidere se portare l'app in primo piano. Solo main thread scrive. */
         @Volatile
         var isVisible = false

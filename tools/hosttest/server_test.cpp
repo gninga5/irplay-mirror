@@ -23,6 +23,7 @@
 #include <sodium.h>
 
 #include "airplay_server.h"
+#include "hls_playlist.h"
 #include "now_playing.h"
 #include "ALACEncoder.h"
 #include "ALACDecoder.h"
@@ -67,7 +68,7 @@ public:
     void onVideoFrame(const uint8_t* d, size_t l, int64_t pts, bool k) override { Event e{"frame", Bytes(d, d + l)}; e.i = pts; e.flag = k; push(e); }
     void onAudioStarted(int ct) override { Event e{"astart"}; e.i = ct; push(e); }
     void onAudioStopped() override { push({"astop"}); }
-    void onAudioFrame(const uint8_t* d, size_t l) override { push({"aframe", Bytes(d, d + l)}); }
+    void onAudioFrame(const uint8_t* d, size_t l, int64_t due) override { Event e{"aframe", Bytes(d, d + l)}; e.i = due; push(e); }
     void onVolume(float db) override { Event e{"vol"}; e.f = db; push(e); }
     void onPinRequested(const std::string& pin) override { push({"pin", Bytes(pin.begin(), pin.end())}); }
     void onPinDismissed() override { push({"pinoff"}); }
@@ -77,7 +78,20 @@ public:
         std::string all = t + "|" + ar + "|" + al; push({"meta", Bytes(all.begin(), all.end())});
     }
     void onArtwork(const uint8_t* d, size_t l) override { push({"art", Bytes(d, d + l)}); }
-    void onProgress(int64_t p, int64_t d) override { Event e{"progress"}; e.i = p; e.f = (float) d; push(e); }
+    void onProgress(int64_t p, int64_t d, int64_t) override { Event e{"progress"}; e.i = p; e.f = (float) d; push(e); }
+    // AirPlay video: a = URL, b = playlist concatenate "chiave\n<testo>\x01", i = numero di playlist, f = posizione
+    void onMediaPlay(const std::string& url, double start, double frac,
+                     const std::vector<std::pair<std::string, std::string>>& pl) override {
+        Event e{"mplay", Bytes(url.begin(), url.end())}; e.i = (int64_t) pl.size(); e.f = (float) (frac >= 0 ? -frac : start);
+        for (auto& [k, v] : pl) { std::string x = k + "\n" + v + "\x01"; e.b.insert(e.b.end(), x.begin(), x.end()); }
+        push(e);
+    }
+    void onMediaRate(float r) override { Event e{"mrate"}; e.f = r; push(e); }
+    void onMediaScrub(double p) override { Event e{"mscrub"}; e.f = (float) p; push(e); }
+    void onMediaStop() override { push({"mstop"}); }
+    void onRemoteControl(const std::string& id, const std::string& token, const std::string& peer) override {
+        std::string v = id + "|" + token + "|" + peer; push({"remote", Bytes(v.begin(), v.end())});
+    }
 };
 
 static std::mt19937 rng(12345);
@@ -475,6 +489,10 @@ static void testMusic(const ReceiverInfo& info, const uint8_t seed[32], const ui
     };
     auto sendTo = [&](uint16_t port, const Bytes& p) { sockaddr_in a{}; a.sin_family = AF_INET; a.sin_port = htons(port); a.sin_addr.s_addr = htonl(INADDR_LOOPBACK); sendto(us, p.data(), p.size(), 0, (sockaddr*) &a, sizeof a); };
 
+    // sincronizzazione: RTP 0 "in uscita adesso" -> ogni pacchetto ha il suo istante di uscita
+    sendTo(cport, Bytes{0x90, 0xD4, 0x00, 0x07, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x2E, 0x00});
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
     // 2) invio in disordine, il 40 non arriva: deve partire una richiesta di ritrasmissione
     std::vector<uint16_t> order; for (uint16_t i = 0; i < 100; ++i) if (i != 40) order.push_back(i);
     std::swap(order[10], order[11]); std::swap(order[60], order[63]);
@@ -494,7 +512,15 @@ static void testMusic(const ReceiverInfo& info, const uint8_t seed[32], const ui
     sendTo(cport, re);
     // 3) il PCM in uscita deve essere identico all'originale (ALAC è senza perdita) e in ordine
     Bytes got;
-    for (int k = 0; k < 100; ++k) { if (!sink->waitFor("aframe", &e, 2000)) break; got.insert(got.end(), e.a.begin(), e.a.end()); }
+    int64_t firstDue = 0, lastDue = 0;
+    for (int k = 0; k < 100; ++k) {
+        if (!sink->waitFor("aframe", &e, 2000)) break;
+        got.insert(got.end(), e.a.begin(), e.a.end());
+        if (k == 0) firstDue = e.i;
+        lastDue = e.i;
+    }
+    // 99 pacchetti da 352 campioni dopo il primo: 790 ms più tardi
+    CHECK(firstDue > 0 && lastDue - firstDue == int64_t{99} * 352 * 1000 / 44100);
     CHECK(got.size() == pcm.size() * 2);
     CHECK(got.size() == pcm.size() * 2 && memcmp(got.data(), pcm.data(), got.size()) == 0);
 
@@ -545,6 +571,216 @@ static void testMusic(const ReceiverInfo& info, const uint8_t seed[32], const ui
     fprintf(stderr, "test audio musica completati\n");
 }
 
+// ------------------------------------------------------------------ AirPlay video
+
+static void testHls() {
+    using namespace irplay::hls;
+    CHECK(isSafeHttpUrl("https://example.com/v.mp4") && isSafeHttpUrl("http://192.168.1.2:8080/a.m3u8?x=1"));
+    for (const char* bad : {"file:///etc/passwd", "content://x/y", "javascript:alert(1)", "https://", "https://user:pw@evil.com/",
+                            "https://a b.com/", "ftp://x/y", "HTTPS://example.com", ""})
+        CHECK(!isSafeHttpUrl(bad));
+    CHECK(*remotePrefixOf("mlhls://localhost/master.m3u8") == "mlhls://localhost");
+    CHECK(!remotePrefixOf("mlhls://localhost/x.m3u8") && !remotePrefixOf("/master.m3u8") && !remotePrefixOf("master.m3u8"));
+
+    const std::string master =
+        "#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"a\",NAME=\"Italiano\",DEFAULT=YES,URI=\"mlhls://localhost/itag/140/index.m3u8\"\n"
+        "#EXT-X-STREAM-INF:BANDWIDTH=800000,AUDIO=\"a\"\nmlhls://localhost/itag/136/index.m3u8\n"
+        "#EXT-X-STREAM-INF:BANDWIDTH=400000,AUDIO=\"a\"\r\nmlhls://localhost/itag/135/index.m3u8\r\n"
+        "#EXT-X-STREAM-INF:BANDWIDTH=400000,AUDIO=\"a\"\nmlhls://localhost/itag/135/index.m3u8\n";   // doppione
+    auto m = rewriteMaster(master, "mlhls://localhost");
+    CHECK(m && m->mediaUris.size() == 3);
+    CHECK(m && m->text.find("mlhls://") == std::string::npos && m->text.find("URI=\"irplay-hls://local/itag/140/index.m3u8\"") != std::string::npos);
+    CHECK(m && m->text.find("\nirplay-hls://local/itag/136/index.m3u8\n") != std::string::npos);
+    // struttura reale di YouTube: le varianti HE-AAC e il loro gruppo audio spariscono
+    {
+        const std::string yt =
+            "#EXTM3U\n#EXT-X-INDEPENDENT-SEGMENTS\n"
+            "#EXT-X-MEDIA:URI=\"mlhls://localhost/itag/233/mediadata.m3u8\",TYPE=AUDIO,GROUP-ID=\"233\",DEFAULT=YES,NAME=\"Default\"\n"
+            "#EXT-X-MEDIA:URI=\"mlhls://localhost/itag/234/mediadata.m3u8\",TYPE=AUDIO,GROUP-ID=\"234\",DEFAULT=YES,NAME=\"Default\"\n"
+            "#EXT-X-STREAM-INF:BANDWIDTH=341828,CODECS=\"avc1.4D4015,mp4a.40.5\",AUDIO=\"233\"\nmlhls://localhost/itag/229/mediadata.m3u8\n"
+            "#EXT-X-STREAM-INF:BANDWIDTH=426175,CODECS=\"avc1.4D4015,mp4a.40.2\",AUDIO=\"234\"\nmlhls://localhost/itag/229/mediadata.m3u8\n"
+            "#EXT-X-STREAM-INF:BANDWIDTH=184754,CODECS=\"avc1.4D400C,mp4a.40.5\",AUDIO=\"233\"\nmlhls://localhost/itag/269/mediadata.m3u8\n"
+            "#EXT-X-STREAM-INF:BANDWIDTH=4867767,CODECS=\"avc1.640028,mp4a.40.2\",AUDIO=\"234\"\nmlhls://localhost/itag/270/mediadata.m3u8\n";
+        auto y = rewriteMaster(yt, "mlhls://localhost");
+        CHECK(y && y->mediaUris.size() == 3);   // 234, 229, 270
+        CHECK(y->text.find("itag/233") == std::string::npos && y->text.find("itag/269") == std::string::npos);
+        CHECK(y->text.find("mp4a.40.5") == std::string::npos && y->text.find("irplay-hls://local/itag/234/") != std::string::npos);
+        // solo HE-AAC: invariata
+        const std::string he = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1,CODECS=\"avc1.4D400C,mp4a.40.5\"\nmlhls://localhost/v.m3u8\n";
+        auto h = rewriteMaster(he, "mlhls://localhost");
+        CHECK(h && h->mediaUris.size() == 1);
+    }
+    CHECK(!rewriteMaster("not a playlist", "mlhls://localhost"));
+    CHECK(!rewriteMaster("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\nhttps://x/y.m3u8\n", "mlhls://localhost"));   // nessun URI remoto
+    // troppi URI
+    { std::string big = "#EXTM3U\n"; for (int i = 0; i < 100; ++i) big += "#EXT-X-STREAM-INF:BANDWIDTH=1\nmlhls://localhost/" + std::to_string(i) + ".m3u8\n";
+      CHECK(!rewriteMaster(big, "mlhls://localhost")); }
+
+    const std::string condensed =
+        "#EXTM3U\n#YT-EXT-CONDENSED-URL:BASE-URI=\"https://rr1.googlevideo.com/videoplayback\",PARAMS=\"id,itag,sq\",PREFIX=\"s/\"\n"
+        "#EXTINF:5.0,\ns/abc/136/0\n#EXTINF:5.0,\ns/abc/136/1/extra\n#EXT-X-ENDLIST\n";
+    auto x = expandCondensed(condensed);
+    CHECK(x && x->find("\nhttps://rr1.googlevideo.com/videoplayback/id/abc/itag/136/sq/0\n") != std::string::npos);
+    CHECK(x && x->find("\nhttps://rr1.googlevideo.com/videoplayback/id/abc/itag/136/sq/1/extra\n") != std::string::npos);
+    CHECK(!expandCondensed("#EXTM3U\n#YT-EXT-CONDENSED-URL:BASE-URI=\"file:///x\",PARAMS=\"a\",PREFIX=\"s/\"\n#EXTINF:1,\ns/1\n"));
+    CHECK(!expandCondensed("#EXTM3U\n#YT-EXT-CONDENSED-URL:BASE-URI=\"https://x\",PARAMS=\"a,b\",PREFIX=\"s/\"\n#EXTINF:1,\ns/1\n"));   // valori mancanti
+    CHECK(!expandCondensed("#EXTM3U\n#YT-EXT-CONDENSED-URL:BASE-URI=\"https://x\n"));   // virgolette non chiuse
+    CHECK(*expandCondensed("#EXTM3U\n#EXTINF:1,\nhttps://x/1.ts") == "#EXTM3U\n#EXTINF:1,\nhttps://x/1.ts\n");
+
+    // fuzzing: testi alterati non devono mai causare accessi fuori dai limiti (ASan)
+    for (int it = 0; it < 30000; ++it) {
+        std::string t = (it & 1) ? master : condensed;
+        for (int k = 0, n = 1 + rng() % 6; k < n; ++k) t[rng() % t.size()] = (char) (rng() % 2 ? '"' : rng());
+        if (rng() % 4 == 0) t.resize(rng() % t.size());
+        rewriteMaster(t, "mlhls://localhost");
+        expandCondensed(t);
+    }
+}
+
+// Legge un messaggio HTTP completo (richiesta o risposta) da fd.
+static bool readHttp(int fd, std::string& head, std::string& body, int timeoutMs = 3000) {
+    timeval tv{timeoutMs / 1000, (timeoutMs % 1000) * 1000}; setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+    head.clear(); body.clear(); char c;
+    while (head.find("\r\n\r\n") == std::string::npos) { if (recv(fd, &c, 1, 0) != 1) return false; head += c; }
+    size_t cl = head.find("Content-Length: "); size_t len = cl == std::string::npos ? 0 : std::atoi(head.c_str() + cl + 16);
+    body.resize(len); size_t got = 0;
+    while (got < len) { ssize_t n = recv(fd, &body[got], len - got, 0); if (n <= 0) return false; got += n; }
+    return true;
+}
+
+static std::string xmlString(const std::string& xml, const std::string& key) {
+    size_t k = xml.find("<key>" + key + "</key><string>"); if (k == std::string::npos) return {};
+    k = xml.find("<string>", k) + 8; return xml.substr(k, xml.find("</string>", k) - k);
+}
+
+static void testMedia(const ReceiverInfo& info, const uint8_t seed[32]) {
+    auto sink = std::make_shared<TestSink>();
+    AirPlayServer server(sink);
+    const int port = server.start(0, info, seed);
+    CHECK(port > 0);
+    const std::string sid = "11111111-2222-4333-8444-555555555555";
+    const std::string H = "X-Apple-Session-ID: " + sid + "\r\n";
+    const char* HTTP = "HTTP/1.1";
+    Event e;
+
+    int cmd = connectTcp(port);
+    Resp r = rtsp(cmd, "GET", "/server-info", {}, H, HTTP);
+    CHECK(r.code == 200 && std::string(r.body.begin(), r.body.end()).find("<key>features</key><integer>639</integer>") != std::string::npos);
+
+    // HLS senza canale inverso: rifiutato
+    auto playBody = [](const std::string& loc, double start) {
+        return *plist::toBinary(plist::Dict().set("Content-Location", loc).set("Start-Position-Seconds", start)
+                                 .set("uuid", "aaaa").set("clientProcName", "YouTube"));
+    };
+    const std::string bp = "Content-Type: application/x-apple-binary-plist\r\n";
+    CHECK(rtsp(cmd, "POST", "/play", playBody("mlhls://localhost/master.m3u8", 0), H + bp, HTTP).code == 400);
+
+    // canale inverso
+    int rev = connectTcp(port);
+    r = rtsp(rev, "POST", "/reverse", {}, H + "Upgrade: PTTH/1.0\r\nConnection: Upgrade\r\nX-Apple-Purpose: event\r\n", HTTP);
+    CHECK(r.code == 101 && r.head.find("Upgrade: PTTH/1.0") != std::string::npos);
+
+    CHECK(rtsp(cmd, "POST", "/play", playBody("mlhls://localhost/master.m3u8", 12.5), H + bp, HTTP).code == 200);
+    const std::string master =
+        "#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"a\",NAME=\"A\",URI=\"mlhls://localhost/a.m3u8\"\n"
+        "#EXT-X-STREAM-INF:BANDWIDTH=1,AUDIO=\"a\"\nmlhls://localhost/v1.m3u8\n";
+    const std::string media1 = "#EXTM3U\n#YT-EXT-CONDENSED-URL:BASE-URI=\"https://g.example/vp\",PARAMS=\"id,sq\",PREFIX=\"s/\"\n#EXTINF:5,\ns/x/0\n#EXT-X-ENDLIST\n";
+    const std::string media2 = "#EXTM3U\n#EXTINF:5,\nhttps://g.example/a/0\n#EXT-X-ENDLIST\n";
+    auto answer = [&](const std::string& url, const std::string& data, int expect) {
+        plist::Dict params; params.set("FCUP_Response_URL", url).set("FCUP_Response_StatusCode", url == "mlhls://localhost/master.m3u8" ? 0 : 200)
+            .set("FCUP_Response_Data", plist::Data(data.begin(), data.end())).set("FCUP_Response_RequestID", 1);
+        Bytes b = *plist::toBinary(plist::Dict().set("type", "unhandledURLResponse").set("params", std::move(params)));
+        CHECK(rtsp(cmd, "POST", "/action", b, H + bp, HTTP).code == expect);
+    };
+    std::vector<std::string> asked;
+    const std::vector<std::string> bodies = {master, media2, media1};   // ordine: master, poi gli URI in ordine di comparsa
+    for (int i = 0; i < 3; ++i) {
+        std::string head, body;
+        CHECK(readHttp(rev, head, body));
+        CHECK(head.rfind("POST /event HTTP/1.1", 0) == 0 && head.find(H) != std::string::npos);
+        const std::string url = xmlString(body, "FCUP_Response_URL");
+        asked.push_back(url);
+        const char* ok = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"; send(rev, ok, strlen(ok), 0);
+        if (i == 1) answer("mlhls://localhost/other.m3u8", media2, 400);   // URL non richiesto: rifiutato
+        answer(url, bodies[i], 200);
+    }
+    CHECK(asked.size() == 3 && asked[0] == "mlhls://localhost/master.m3u8" && asked[1] == "mlhls://localhost/a.m3u8" && asked[2] == "mlhls://localhost/v1.m3u8");
+    CHECK(sink->waitFor("mplay", &e) && std::string(e.a.begin(), e.a.end()) == "irplay-hls://local/master.m3u8" && e.i == 3 && e.f == 12.5f);
+    {
+        const std::string all(e.b.begin(), e.b.end());
+        CHECK(all.find("irplay-hls://local/v1.m3u8\n#EXTM3U") != std::string::npos);
+        CHECK(all.find("https://g.example/vp/id/x/sq/0\n") != std::string::npos);
+        CHECK(all.find("mlhls://") == std::string::npos);
+    }
+
+    // stato del lettore -> evento sul canale inverso e /playback-info
+    server.updateMediaPlayback(5.0, 100.0, 1.0f, AirPlayServer::MediaState::Playing);
+    { std::string head, body; CHECK(readHttp(rev, head, body) && xmlString(body, "state") == "playing" && xmlString(body, "category") == "video"); }
+    server.updateMediaPlayback(6.0, 100.0, 1.0f, AirPlayServer::MediaState::Playing);   // stesso stato: nessun nuovo evento
+    r = rtsp(cmd, "GET", "/playback-info", {}, H, HTTP);
+    { const std::string x(r.body.begin(), r.body.end());
+      CHECK(r.code == 200 && x.find("<key>position</key><real>6.000000</real>") != std::string::npos && x.find("<key>readyToPlay</key><true/>") != std::string::npos); }
+    CHECK(rtsp(cmd, "POST", "/rate?value=0.000000", {}, H, HTTP).code == 200 && sink->waitFor("mrate", &e) && e.f == 0.0f);
+    CHECK(rtsp(cmd, "POST", "/scrub?position=30.5", {}, H, HTTP).code == 200 && sink->waitFor("mscrub", &e) && e.f == 30.5f);
+    CHECK(rtsp(cmd, "POST", "/scrub?position=nan", {}, H, HTTP).code == 400);
+    CHECK(rtsp(cmd, "POST", "/rate?value=1e400", {}, H, HTTP).code == 400);
+    r = rtsp(cmd, "GET", "/scrub", {}, H, HTTP);
+    CHECK(std::string(r.body.begin(), r.body.end()) == "duration: 100.000000\r\nposition: 6.000000\r\n");
+    CHECK(rtsp(cmd, "PUT", "/setProperty?actionAtItemEnd", {}, H, HTTP).code == 200);
+    server.updateMediaPlayback(6.0, 100.0, 0.0f, AirPlayServer::MediaState::Paused);
+    { std::string head, body; CHECK(readHttp(rev, head, body) && xmlString(body, "state") == "paused"); }
+
+    // indirizzi diretti: solo http/https
+    for (const char* bad : {"file:///data/data/com.irplay.tv/shared_prefs/x.xml", "content://media/1", "javascript:1"})
+        CHECK(rtsp(cmd, "POST", "/play", playBody(bad, 0), H + bp, HTTP).code == 400);
+    std::this_thread::sleep_for(std::chrono::milliseconds(100)); CHECK(!sink->has("mplay"));
+    std::string text = "Content-Location: https://example.com/v.mp4\nStart-Position: 0.25\n";
+    CHECK(rtsp(cmd, "POST", "/play", Bytes(text.begin(), text.end()), H + "Content-Type: text/parameters\r\n", HTTP).code == 200);
+    CHECK(sink->waitFor("mplay", &e) && std::string(e.a.begin(), e.a.end()) == "https://example.com/v.mp4" && e.i == 0 && e.f == -0.25f);
+    CHECK(rtsp(cmd, "POST", "/stop", {}, H, HTTP).code == 200 && sink->waitFor("mstop"));
+
+    // stop dalla TV: evento "stopped" a iOS
+    CHECK(rtsp(cmd, "POST", "/play", playBody("https://example.com/v.m3u8", 0), H + bp, HTTP).code == 200 && sink->waitFor("mplay"));
+    server.stopMedia();
+    { std::string head, body; CHECK(readHttp(rev, head, body) && xmlString(body, "state") == "stopped"); }
+
+    // chiusura del canale inverso con un video avviato: iOS lo fa da sé, il lettore continua
+    CHECK(rtsp(cmd, "POST", "/play", playBody("https://example.com/v.m3u8", 0), H + bp, HTTP).code == 200 && sink->waitFor("mplay"));
+    close(rev);
+    CHECK(!sink->waitFor("mstop", nullptr, 1500));
+    CHECK(rtsp(cmd, "POST", "/rate?value=0.000000", {}, H, HTTP).code == 200 && sink->waitFor("mrate"));
+    CHECK(rtsp(cmd, "POST", "/stop", {}, H, HTTP).code == 200 && sink->waitFor("mstop"));
+
+    // chiusura del canale inverso mentre si aspettano le playlist: video annullato
+    rev = connectTcp(port);
+    CHECK(rtsp(rev, "POST", "/reverse", {}, H + "Upgrade: PTTH/1.0\r\nConnection: Upgrade\r\n", HTTP).code == 101);
+    CHECK(rtsp(cmd, "POST", "/play", playBody("mlhls://localhost/master.m3u8", 0), H + bp, HTTP).code == 200);
+    { std::string head, body; CHECK(readHttp(rev, head, body) && xmlString(body, "type") == "unhandledURLRequest"); }
+    close(rev);
+    CHECK(sink->waitFor("mstop", nullptr, 4000));
+
+    // richieste ostili sul canale video
+    CHECK(rtsp(cmd, "POST", "/action", Bytes{'x'}, H + bp, HTTP).code == 400);
+    { int c = connectTcp(port); CHECK(rtsp(c, "POST", "/play", Bytes{'x'}, "X-Apple-Session-ID: ../../etc\r\n" + bp, HTTP).code == 400); close(c); }
+    close(cmd);
+    server.stop();
+
+    // con il PIN attivo il video richiede un dispositivo associato
+    {
+        AirPlayServer s2(sink);
+        AccessConfig ac; ac.pin = PinMode::FirstTime;
+        const int p2 = s2.start(0, info, seed, ac);
+        int c2 = connectTcp(p2);
+        CHECK(rtsp(c2, "POST", "/play", playBody("https://example.com/v.mp4", 0), H + bp, HTTP).code == 403);
+        close(c2);
+        int c3 = connectTcp(p2);
+        CHECK(rtsp(c3, "POST", "/reverse", {}, H + "Upgrade: PTTH/1.0\r\n", HTTP).code == 403);
+        close(c3);
+        s2.stop();
+    }
+    fprintf(stderr, "test AirPlay video completati\n");
+}
+
 static Bytes infoTxt() { std::string e = "deviceid=02:11:22:33:44:55"; Bytes b{(uint8_t) e.size()}; b.insert(b.end(), e.begin(), e.end()); return b; }
 
 int main() {
@@ -564,6 +800,8 @@ int main() {
     testPin(info, seed, pk);
     testNowPlayingParsers();
     testMusic(info, seed, pk);
+    testHls();
+    testMedia(info, seed);
     const int port = server.start(0, info, seed);
     CHECK(port > 0);
 
@@ -622,7 +860,14 @@ int main() {
     CHECK(sp && sp->asDict()->find("timingPort") && *sp->asDict()->find("timingPort")->asUInt() > 0);
     Event e; CHECK(sink->waitFor("start", &e) && std::string(e.a.begin(), e.a.end()) == "iPhone di Test");
     { pollfd p{tsock, POLLIN, 0}; uint8_t tb[64]; CHECK(poll(&p, 1, 2000) == 1 && recv(tsock, tb, 64, 0) == 32 && tb[1] == 0xD2); }
-    CHECK(rtsp(fd, "RECORD", "rtsp://127.0.0.1/123").code == 200);
+    // DACP: valori non validi ignorati, quelli validi passati una sola volta
+    CHECK(rtsp(fd, "RECORD", "rtsp://127.0.0.1/123", {}, "DACP-ID: 12G4\r\nActive-Remote: 1\r\n").code == 200);
+    CHECK(rtsp(fd, "RECORD", "rtsp://127.0.0.1/123", {}, "DACP-ID: 14B6F00A07B14C68\r\nActive-Remote: 12a\r\n").code == 200);
+    CHECK(!sink->waitFor("remote", nullptr, 200));
+    CHECK(rtsp(fd, "RECORD", "rtsp://127.0.0.1/123", {}, "DACP-ID: 14B6F00A07B14C68\r\nActive-Remote: 3423786117\r\n").code == 200);
+    CHECK(sink->waitFor("remote", &e) && std::string(e.a.begin(), e.a.end()).rfind("14B6F00A07B14C68|3423786117|", 0) == 0);
+    CHECK(rtsp(fd, "RECORD", "rtsp://127.0.0.1/123", {}, "DACP-ID: 14B6F00A07B14C68\r\nActive-Remote: 3423786117\r\n").code == 200);
+    CHECK(!sink->waitFor("remote", nullptr, 200));
 
     uint8_t skey[16]; phone.sessionKey(ekey, skey);
 

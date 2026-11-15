@@ -45,6 +45,9 @@ Material Icons (home screen icons)
 Roboto (letters of the launcher banner)
   Copyright Google LLC. License: Apache License 2.0.
 
+AndroidX Media3 (ExoPlayer, the player used for AirPlay video)
+  Copyright The Android Open Source Project. License: Apache License 2.0.
+
 AndroidX, Material Components, Kotlin and kotlinx.coroutines libraries
   Copyright The Android Open Source Project, Google LLC and JetBrains s.r.o.
   License: Apache License 2.0.

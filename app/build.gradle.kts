@@ -13,8 +13,8 @@ android {
         // Min SDK 29: garantisce supporto completo da Android 10 in poi (inclusa la TCL 43P639)
         minSdk = 29
         targetSdk = 34
-        versionCode = 3
-        versionName = "1.2.0"
+        versionCode = 4
+        versionName = "1.3.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -97,6 +97,11 @@ dependencies {
 
     // Dipendenza fondamentale per Android TV: gestione telecomando D-Pad e layout Leanback
     implementation("androidx.leanback:leanback:1.2.0")
+
+    // Lettore dell'AirPlay video: ExoPlayer con HLS e i controlli di Media3 (Apache-2.0).
+    implementation("androidx.media3:media3-exoplayer:1.11.1")
+    implementation("androidx.media3:media3-exoplayer-hls:1.11.1")
+    implementation("androidx.media3:media3-ui:1.11.1")
 
     // Coroutine per la gestione asincrona dei socket di rete senza bloccare la UI della TV
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")

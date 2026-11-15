@@ -74,22 +74,28 @@ namespace irplay {
         void stop();
         /** FLUSH (pausa, salto nel brano): scarta l'audio in coda. nextSeq < 0 = sconosciuto. */
         void requestFlush(int nextSeq);
+        /**
+         * Istante (CLOCK_MONOTONIC, ms) in cui il frame RTP indicato esce dagli altoparlanti,
+         * secondo l'ultima sincronizzazione di iOS; 0 se non c'è o se rtp è troppo lontano.
+         */
+        int64_t dueMs(uint32_t rtp) const;
 
     private:
         struct Slot {
             bool used = false;
             uint16_t seq = 0;
+            uint32_t rtp = 0;
             std::vector<uint8_t> data;
         };
         static constexpr size_t kSlots = 256;   // ~2 s di pacchetti ALAC da 352 campioni
 
         void run();
         void onRtp(uint8_t* buf, size_t len);
-        void insert(uint16_t seq, const uint8_t* payload, size_t len);
+        void insert(uint16_t seq, uint32_t rtp, const uint8_t* payload, size_t len);
         void drain(int64_t now);
         void resetBuffer();
         void requestResend(uint16_t first, uint16_t count);
-        void deliver(const uint8_t* payload, size_t len);
+        void deliver(const uint8_t* payload, size_t len, uint32_t rtp);
 
         SessionSink& sink_;
         sockaddr_in6 peer_;
@@ -111,6 +117,18 @@ namespace irplay {
         size_t buffered_ = 0;
         int64_t gapSinceMs_ = 0;
         uint16_t resendCounter_ = 0;
+        // Ultima sincronizzazione di iOS: frame RTP in uscita adesso e istante di arrivo.
+        // Scritta dal thread audio, letta anche dal thread RTSP (avanzamento del brano).
+        std::atomic<bool> haveSync_{false};
+        std::atomic<uint32_t> syncRtp_{0};
+        std::atomic<int64_t> syncAtMs_{0};
+        // Prima della prima sincronizzazione (avvio e ripresa dopo una pausa, quando iOS riapre
+        // il flusso): primo pacchetto ricevuto, che si suona dopo l'anticipo tipico di iOS.
+        std::atomic<bool> haveFirst_{false};
+        std::atomic<uint32_t> firstRtp_{0};
+        std::atomic<int64_t> firstAtMs_{0};
+        // Statistiche di qualità, scritte nel log a fine stream (solo conteggi).
+        uint64_t statDelivered_ = 0, statLost_ = 0, statResendAsked_ = 0;
         std::unique_ptr<AlacDecoder> alac_;
         std::vector<uint8_t> pcm_;
     };
@@ -143,6 +161,8 @@ namespace irplay {
         int startMirror(uint64_t streamConnectionId);
         bool startAudio(int codecType, uint16_t remoteControlPort, uint16_t& dataPort, uint16_t& controlPort);
         void flushAudio(int nextSeq);
+        /** Vedi AudioStream::dueMs; 0 senza flusso audio. */
+        int64_t audioDueMs(uint32_t rtp) const;
         void stopMirror();
         void stopAudio();
 

@@ -68,25 +68,32 @@ namespace irplay::nowplaying {
         return data != nullptr && walk(data, len, out, true);
     }
 
-    bool parseProgress(const uint8_t* data, size_t len, int64_t& positionMs, int64_t& durationMs) {
+    bool parseProgressRtp(const uint8_t* data, size_t len, uint32_t& start, uint32_t& current, uint32_t& end) {
         constexpr std::string_view prefix = "progress:";
         if (data == nullptr || len < prefix.size() || len > 128) return false;
         std::string_view s(reinterpret_cast<const char*>(data), len);
         if (s.substr(0, prefix.size()) != prefix) return false;
         s.remove_prefix(prefix.size());
         while (!s.empty() && s.front() == ' ') s.remove_prefix(1);
-        uint32_t start, cur, end;
         if (!parseUint(s, start) || s.empty() || s.front() != '/') return false;
         s.remove_prefix(1);
-        if (!parseUint(s, cur) || s.empty() || s.front() != '/') return false;
+        if (!parseUint(s, current) || s.empty() || s.front() != '/') return false;
         s.remove_prefix(1);
-        if (!parseUint(s, end)) return false;
+        return parseUint(s, end);
+    }
+
+    bool progressMs(uint32_t start, uint32_t current, uint32_t end, int64_t& positionMs, int64_t& durationMs) {
         // Timestamp RTP a 32 bit: le differenze vanno calcolate modulo 2^32 (possono "girare").
-        const uint32_t pos = cur - start, dur = end - start;
+        const uint32_t pos = current - start, dur = end - start;
         if (pos > dur) return false;
         positionMs = static_cast<int64_t>(pos) * 1000 / kRtpRate;
         durationMs = static_cast<int64_t>(dur) * 1000 / kRtpRate;
         return true;
+    }
+
+    bool parseProgress(const uint8_t* data, size_t len, int64_t& positionMs, int64_t& durationMs) {
+        uint32_t start, cur, end;
+        return parseProgressRtp(data, len, start, cur, end) && progressMs(start, cur, end, positionMs, durationMs);
     }
 
 } // namespace irplay::nowplaying

@@ -10,6 +10,8 @@
  */
 #include "plist_writer.h"
 
+#include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <vector>
 
@@ -195,6 +197,81 @@ namespace irplay::plist {
         putBE(out, f.objs.size(), 8);
         putBE(out, 0, 8);               // l'oggetto radice è sempre il primo
         putBE(out, offsetTable, 8);
+        return out;
+    }
+
+    namespace {
+
+        void xmlEscape(std::string& out, const std::string& s) {
+            for (char c : s) {
+                switch (c) {
+                    case '&': out += "&amp;"; break;
+                    case '<': out += "&lt;"; break;
+                    case '>': out += "&gt;"; break;
+                    default: out.push_back(c);
+                }
+            }
+        }
+
+        void base64(std::string& out, const Data& d) {
+            static const char* t = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+            size_t i = 0;
+            for (; i + 2 < d.size(); i += 3) {
+                const uint32_t v = (uint32_t(d[i]) << 16) | (uint32_t(d[i + 1]) << 8) | d[i + 2];
+                out += {t[v >> 18], t[(v >> 12) & 63], t[(v >> 6) & 63], t[v & 63]};
+            }
+            if (i + 1 == d.size()) {
+                const uint32_t v = uint32_t(d[i]) << 16;
+                out += {t[v >> 18], t[(v >> 12) & 63], '=', '='};
+            } else if (i + 2 == d.size()) {
+                const uint32_t v = (uint32_t(d[i]) << 16) | (uint32_t(d[i + 1]) << 8);
+                out += {t[v >> 18], t[(v >> 12) & 63], t[(v >> 6) & 63], '='};
+            }
+        }
+
+        void xmlValue(std::string& out, const Value& v) {
+            if (const bool* b = std::get_if<bool>(&v.v)) {
+                out += *b ? "<true/>" : "<false/>";
+            } else if (const uint64_t* n = std::get_if<uint64_t>(&v.v)) {
+                out += "<integer>" + std::to_string(*n) + "</integer>";
+            } else if (const double* d = std::get_if<double>(&v.v)) {
+                char buf[48];
+                std::snprintf(buf, sizeof buf, "%.6f", std::isfinite(*d) ? *d : 0.0);
+                out += std::string("<real>") + buf + "</real>";
+            } else if (const std::string* s = std::get_if<std::string>(&v.v)) {
+                out += "<string>";
+                xmlEscape(out, *s);
+                out += "</string>";
+            } else if (const Data* data = std::get_if<Data>(&v.v)) {
+                out += "<data>";
+                base64(out, *data);
+                out += "</data>";
+            } else if (const Array* a = std::get_if<Array>(&v.v)) {
+                out += "<array>";
+                for (const Value& e : *a) xmlValue(out, e);
+                out += "</array>";
+            } else if (const Dict* dict = std::get_if<Dict>(&v.v)) {
+                out += "<dict>";
+                for (size_t i = 0; i < dict->keys.size() && i < dict->values.size(); ++i) {
+                    out += "<key>";
+                    xmlEscape(out, dict->keys[i]);
+                    out += "</key>";
+                    xmlValue(out, dict->values[i]);
+                }
+                out += "</dict>";
+            }
+        }
+
+    } // namespace
+
+    std::string toXml(const Value& root) {
+        std::string out =
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" "
+                "\"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"
+                "<plist version=\"1.0\">";
+        xmlValue(out, root);
+        out += "</plist>\n";
         return out;
     }
 

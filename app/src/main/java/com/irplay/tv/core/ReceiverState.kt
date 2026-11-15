@@ -46,7 +46,8 @@ object ReceiverState {
         /** Posizione attuale: in riproduzione avanza da sola dall'ultimo aggiornamento di iOS. */
         fun currentPositionMs(now: Long): Long {
             if (durationMs <= 0) return 0
-            val p = if (paused) positionMs else positionMs + (now - progressAtElapsed)
+            // progressAtElapsed può essere nel futuro (ripresa: audio ricevuto ma non ancora suonato).
+            val p = if (paused) positionMs else positionMs + (now - progressAtElapsed).coerceAtLeast(0)
             return p.coerceIn(0, durationMs)
         }
     }

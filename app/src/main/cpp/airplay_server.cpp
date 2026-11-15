@@ -15,7 +15,10 @@
  */
 #define LOG_TAG "iRPlay_RTSP"
 #include "airplay_server.h"
+#include "server_conn.h"
 
+#include <algorithm>
+#include <cctype>
 #include <cerrno>
 #include <cmath>
 #include <cstdlib>
@@ -38,30 +41,12 @@
 
 namespace irplay {
 
-    struct RtspRequest {
-        std::string method, uri, protocol;
-        std::vector<std::pair<std::string, std::string>> headers;
-        std::vector<uint8_t> body;
-
-        const std::string* header(std::string_view name) const;
-    };
-
-    struct AirPlayServer::ConnState {
-        Client* client = nullptr;
-        int fd = -1;
-        sockaddr_in6 peer{};
-        crypto::PairingSession pairing;
-        crypto::FairPlay fairplay;
-        std::unique_ptr<Session> session;
-    };
+    using rtsp::iequals;
+    using rtsp::isDigits;
+    using rtsp::sendResponse;
 
     namespace {
 
-        constexpr size_t kMaxHeaderBytes = 16 * 1024;
-        constexpr size_t kMaxBodyBytes   = 64 * 1024;   // fp-setup = 164 B, i plist di SETUP pesano pochi KB
-        // Unica eccezione: la copertina dell'album (SET_PARAMETER image/jpeg) può superare i 64 KB.
-        constexpr size_t kMaxArtworkBytes = 2 * 1024 * 1024;
-        constexpr size_t kMaxHeaders     = 64;
         constexpr size_t kMaxClients     = 6;
         constexpr int    kIdleTimeoutSec = 60;          // connessione senza sessione
         constexpr int64_t kWatchdogMs    = 3000;        // video connesso: iOS invia dati almeno ogni secondo
@@ -70,136 +55,10 @@ namespace irplay {
         constexpr int64_t kPinLifetimeMs = 120000;      // un PIN vale 2 minuti
         constexpr int kPinMaxFailures    = 3;           // poi blocco: 60 s, 120 s, 240 s ... fino a 64 min
         constexpr size_t kMaxTrusted     = 64;
-        constexpr const char* kServerHeader = "AirTunes/220.68";
         constexpr const char* kPublic =
                 "SETUP, RECORD, PAUSE, FLUSH, TEARDOWN, OPTIONS, GET_PARAMETER, SET_PARAMETER, POST, GET";
         constexpr const char* kOctet = "application/octet-stream";
         constexpr const char* kBplist = "application/x-apple-binary-plist";
-
-        using Headers = std::vector<std::pair<std::string, std::string>>;
-
-        bool iequals(std::string_view a, std::string_view b) {
-            if (a.size() != b.size()) return false;
-            for (size_t i = 0; i < a.size(); ++i) {
-                char x = a[i], y = b[i];
-                if (x >= 'A' && x <= 'Z') x = static_cast<char>(x + 32);
-                if (y >= 'A' && y <= 'Z') y = static_cast<char>(y + 32);
-                if (x != y) return false;
-            }
-            return true;
-        }
-
-        std::string_view trim(std::string_view s) {
-            while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.remove_prefix(1);
-            while (!s.empty() && (s.back() == ' ' || s.back() == '\t')) s.remove_suffix(1);
-            return s;
-        }
-
-// Solo cifre decimali, niente segno né spazi interni, con limite massimo:
-// rifiuta valori come "-1", "1e9" o "123abc" invece di interpretarli a metà.
-        bool parseContentLength(std::string_view v, size_t maxBody, size_t& out) {
-            if (v.empty() || v.size() > 7) return false;
-            size_t n = 0;
-            for (char c : v) {
-                if (c < '0' || c > '9') return false;
-                n = n * 10 + static_cast<size_t>(c - '0');
-            }
-            if (n > maxBody) return false;
-            out = n;
-            return true;
-        }
-
-        bool isDigits(std::string_view s, size_t maxLen) {
-            if (s.empty() || s.size() > maxLen) return false;
-            for (char c : s) if (c < '0' || c > '9') return false;
-            return true;
-        }
-
-// Restituisce 1 se ha estratto una richiesta completa (rimossa da buf),
-// 0 se servono altri byte, -1 se la richiesta è malformata o supera i limiti.
-        int parseRequest(std::vector<uint8_t>& buf, RtspRequest& req) {
-            const std::string_view view(reinterpret_cast<const char*>(buf.data()), buf.size());
-            const size_t end = view.find("\r\n\r\n");
-            if (end == std::string_view::npos) return buf.size() > kMaxHeaderBytes ? -1 : 0;
-            if (end > kMaxHeaderBytes) return -1;
-
-            const std::string_view head = view.substr(0, end);
-            const size_t eol = head.find("\r\n");
-            const std::string_view line = head.substr(0, eol);
-
-            const size_t sp1 = line.find(' ');
-            const size_t sp2 = sp1 == std::string_view::npos ? sp1 : line.find(' ', sp1 + 1);
-            if (sp1 == std::string_view::npos || sp2 == std::string_view::npos || sp1 == 0 || sp2 == sp1 + 1)
-                return -1;
-
-            req = RtspRequest{};
-            req.method   = std::string(line.substr(0, sp1));
-            req.uri      = std::string(line.substr(sp1 + 1, sp2 - sp1 - 1));
-            req.protocol = std::string(line.substr(sp2 + 1));
-            if (req.protocol != "RTSP/1.0" && req.protocol != "HTTP/1.1") return -1;
-
-            size_t contentLength = 0;
-            bool haveLength = false;
-            size_t pos = eol == std::string_view::npos ? head.size() : eol + 2;
-            while (pos < head.size()) {
-                size_t next = head.find("\r\n", pos);
-                if (next == std::string_view::npos) next = head.size();
-                const std::string_view h = head.substr(pos, next - pos);
-                const size_t colon = h.find(':');
-                if (colon == std::string_view::npos || colon == 0) return -1;
-                const std::string_view name = trim(h.substr(0, colon));
-                const std::string_view value = trim(h.substr(colon + 1));
-
-                // Due Content-Length, o Transfer-Encoding, permetterebbero di far leggere
-                // al server una richiesta "nascosta" dentro un'altra: si scarta tutto.
-                if (iequals(name, "Transfer-Encoding")) return -1;
-                if (iequals(name, "Content-Length")) {
-                    // Il limite dipende dal metodo, già noto dalla prima riga: solo SET_PARAMETER
-                    // (copertine) può avere un corpo grande.
-                    const size_t maxBody = req.method == "SET_PARAMETER" ? kMaxArtworkBytes : kMaxBodyBytes;
-                    if (haveLength || !parseContentLength(value, maxBody, contentLength)) return -1;
-                    haveLength = true;
-                }
-                if (req.headers.size() >= kMaxHeaders) return -1;
-                req.headers.emplace_back(std::string(name), std::string(value));
-                pos = next + 2;
-            }
-
-            const size_t total = end + 4 + contentLength;   // nessun overflow: entrambi i termini sono limitati
-            if (buf.size() < total) return 0;
-            req.body.assign(buf.begin() + static_cast<long>(end + 4), buf.begin() + static_cast<long>(total));
-            buf.erase(buf.begin(), buf.begin() + static_cast<long>(total));
-            return 1;
-        }
-
-        bool sendAll(int fd, const void* data, size_t len) {
-            const auto* p = static_cast<const uint8_t*>(data);
-            while (len > 0) {
-                const ssize_t n = ::send(fd, p, len, net::kSendFlags);
-                if (n < 0) {
-                    if (errno == EINTR) continue;
-                    return false;
-                }
-                p += n;
-                len -= static_cast<size_t>(n);
-            }
-            return true;
-        }
-
-        bool sendResponse(int fd, const RtspRequest* req, int code, const char* reason,
-                          const Headers& extra = {}, const std::vector<uint8_t>& body = {}) {
-            const std::string proto = req ? req->protocol : "RTSP/1.0";
-            std::string out = proto + " " + std::to_string(code) + " " + reason + "\r\n";
-            if (req) {
-                const std::string* cseq = req->header("CSeq");
-                if (cseq && isDigits(*cseq, 10)) out += "CSeq: " + *cseq + "\r\n";
-            }
-            out += std::string("Server: ") + kServerHeader + "\r\n";
-            for (const auto& [k, v] : extra) out += k + ": " + v + "\r\n";
-            out += "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n";
-            if (!sendAll(fd, out.data(), out.size())) return false;
-            return body.empty() || sendAll(fd, body.data(), body.size());
-        }
 
         bool startsWith(const std::vector<uint8_t>& body, std::string_view prefix) {
             return body.size() >= prefix.size() && std::memcmp(body.data(), prefix.data(), prefix.size()) == 0;
@@ -244,16 +103,12 @@ namespace irplay {
 
     } // namespace
 
-    const std::string* RtspRequest::header(std::string_view name) const {
-        for (const auto& [k, v] : headers) if (iequals(k, name)) return &v;
-        return nullptr;
-    }
-
     // =============================================================== dispatch
 
     bool AirPlayServer::dispatch(ConnState& st, const RtspRequest& req) {
         // Nel log vanno solo metodo e URI (troncato): i corpi contengono chiavi.
-        LOGI("%s %.*s", req.method.c_str(), static_cast<int>(std::min<size_t>(req.uri.size(), 64)), req.uri.c_str());
+        // /playback-info arriva ogni secondo durante un video: non si registra.
+        if (req.uri != "/playback-info") LOGI("%s %.*s", req.method.c_str(), static_cast<int>(std::min<size_t>(req.uri.size(), 64)), req.uri.c_str());
         if (st.session) st.session->touch();
         const int fd = st.fd;
         const std::string& m = req.method;
@@ -318,6 +173,7 @@ namespace irplay {
                     return false;
                 }
                 LOGI("pair-verify completato");
+                notePeerVerified(st);
                 return sendResponse(fd, &req, 200, "OK", {{"Content-Type", kOctet}});
             }
             sendResponse(fd, &req, 400, "Bad Request");
@@ -333,6 +189,8 @@ namespace irplay {
             }
             return sendResponse(fd, &req, 200, "OK", {{"Content-Type", kOctet}}, out);
         }
+
+        if (st.session && !st.remoteSent) notifyRemoteControl(st, req);
 
         if (m == "SETUP") return handleSetup(st, req);
         if (m == "TEARDOWN") return handleTeardown(st, req);
@@ -363,8 +221,12 @@ namespace irplay {
                 if (parseVolume(req.body, db)) {
                     volumeDb_ = db;
                     sink_->onVolume(db);
-                } else if (nowplaying::parseProgress(req.body.data(), req.body.size(), pos, dur)) {
-                    sink_->onProgress(pos, dur);
+                } else if (uint32_t start, cur, end;
+                           nowplaying::parseProgressRtp(req.body.data(), req.body.size(), start, cur, end) &&
+                           nowplaying::progressMs(start, cur, end, pos, dur)) {
+                    // La posizione è quella dell'orologio di iOS: si sente quando il frame "cur"
+                    // esce dalla TV (in ripresa e cambio brano, circa 1,8 s dopo). 0 = adesso.
+                    sink_->onProgress(pos, dur, st.session ? st.session->audioDueMs(cur) : 0);
                 }
             } else if (ct && iequals(*ct, "application/x-dmap-tagged")) {
                 nowplaying::Metadata md;
@@ -406,6 +268,11 @@ namespace irplay {
 
         if (m == "POST" && (u == "/feedback" || u == "/audioMode" || u == "/command")) {
             return sendResponse(fd, &req, 200, "OK", jack);
+        }
+
+        if (!rtsp) {
+            bool keepOpen = true;
+            if (dispatchMedia(st, req, keepOpen)) return keepOpen;
         }
 
         LOGW("Metodo non gestito: %s", m.c_str());
@@ -777,6 +644,8 @@ namespace irplay {
 
     // =============================================================== ciclo di vita
 
+    AirPlayServer::AirPlayServer(std::shared_ptr<SessionSink> sink) : sink_(std::move(sink)) {}
+
     AirPlayServer::~AirPlayServer() { stop(); }
 
     int AirPlayServer::start(uint16_t preferredPort, const ReceiverInfo& info, const uint8_t seed[32],
@@ -803,6 +672,7 @@ namespace irplay {
         auto plists = buildInfoPlists(info);
         if (!plists) { LOGE("ReceiverInfo non valido, server non avviato"); return -1; }
         info_ = std::move(*plists);
+        serverInfo_ = buildServerInfo(info);
 
         uint16_t port = preferredPort;
         int fd = net::tcpListen(port, 8);
@@ -884,10 +754,23 @@ namespace irplay {
             net::toIn6(ss, peer6);
             auto client = std::make_unique<Client>();
             client->fd = fd;
+            std::memcpy(client->addr.data(), &peer6.sin6_addr, 16);
             Client* raw = client.get();
             client->thread = std::thread(&AirPlayServer::handleConnection, this, raw, net::toString(peer6), ss);
             clients_.push_back(std::move(client));
         }
+    }
+
+    void AirPlayServer::notifyRemoteControl(ConnState& st, const RtspRequest& req) {
+        const std::string* id = req.header("DACP-ID");
+        const std::string* token = req.header("Active-Remote");
+        if (!id || !token) return;
+        // Valori controllati prima di uscire dal C++: finiscono in un nome mDNS e in un'intestazione HTTP.
+        const bool idOk = !id->empty() && id->size() <= 16 &&
+                          std::all_of(id->begin(), id->end(), [](char c) { return std::isxdigit(static_cast<unsigned char>(c)) != 0; });
+        if (!idOk || !isDigits(*token, 10)) return;
+        st.remoteSent = true;
+        sink_->onRemoteControl(*id, *token, net::toString(st.peer));
     }
 
     void AirPlayServer::handleConnection(Client* client, std::string peer, sockaddr_storage peerAddr) {
@@ -919,6 +802,13 @@ namespace irplay {
             if (n < 0) {
                 if (errno == EINTR) continue;
                 if (errno != EAGAIN && errno != EWOULDBLOCK) break;
+                mediaHousekeeping(nullptr);
+                if (st.reverse) {
+                    // Il canale inverso resta muto per tutta la durata del video: nessun timeout
+                    // finché è quello attivo. Se è stato sostituito, il thread esce.
+                    if (!isActiveReverse(st.fd)) break;
+                    continue;
+                }
                 if (st.session) {
                     const bool video = st.session->mirrorConnected();
                     if (st.session->idleMs() > (video ? kWatchdogMs : kSessionIdleMs)) {
@@ -933,13 +823,20 @@ namespace irplay {
             }
             idleSec = 0;
             buf.insert(buf.end(), chunk, chunk + n);
-            if (buf.size() > kMaxHeaderBytes + kMaxArtworkBytes + 4) {
+            if (buf.size() > rtsp::kMaxMessageBytes) {
                 LOGW("Buffer oltre il limite da %s, chiudo", peer.c_str());
                 break;
             }
             for (;;) {
+                if (st.reverse) {
+                    // Canale inverso: arrivano solo le risposte di iOS alle nostre POST /event.
+                    const int r = rtsp::discardResponse(buf);
+                    if (r == 0) break;
+                    if (r < 0) { keepOpen = false; break; }
+                    continue;
+                }
                 RtspRequest req;
-                const int r = parseRequest(buf, req);
+                const int r = rtsp::parseRequest(buf, req);
                 if (r == 0) break;
                 if (r < 0) {
                     LOGW("Richiesta malformata da %s", peer.c_str());
@@ -956,6 +853,7 @@ namespace irplay {
             if (client->stopRequested) reason = EndReason::Local;
         }
         endSession(st, reason);
+        mediaHousekeeping(&st);
 
         std::lock_guard<std::mutex> lock(mutex_);
         ::close(client->fd);

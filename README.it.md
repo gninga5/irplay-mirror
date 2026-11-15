@@ -39,6 +39,15 @@ trova, il testo che scorre a tempo con la canzone. AirPlay i testi non li manda,
 cerca online: prima su [lrcmux.dev](https://lrcmux.dev), poi su [LRCLIB](https://lrclib.net),
 poi su [lyrics.ovh](https://lyrics.ovh). Dalla TV escono solo titolo, artista, album e durata
 del brano, se la TV è offline non parte nessuna richiesta, e dalla home si può spegnere.
+Su quella schermata funziona anche il telecomando della TV: brano precedente, play/pausa e brano
+successivo sono pulsanti che raggiungi con le frecce, e sulla barra di avanzamento ◀ ▶ saltano
+di 10 secondi. Con Apple Music il salto non è immediato, perché da un ricevitore come questo il
+telefono accetta solo l'avanti veloce: un salto di 30 secondi richiede una decina di secondi.
+
+Funziona anche il pulsante AirPlay dentro le app. In YouTube, Safari e in molte altre app,
+scegliendo la TV lo schermo non viene duplicato: il telefono passa il video e la TV lo riproduce
+da sola, alla qualità piena, mentre il telefono diventa un telecomando per pausa, salti e stop.
+Nel frattempo puoi bloccarlo o usare altre app.
 
 Poi ci sono alcune cose che volevo per me:
 
@@ -51,8 +60,8 @@ Poi ci sono alcune cose che volevo per me:
 - **Si apre da sola** quando inizi a duplicare lo schermo, senza doverla avviare prima.
 - L'interfaccia è in italiano o in inglese, a seconda della lingua della TV.
 
-Cosa non fa ancora: HEVC/4K, l'AirPlay "video" (quando un'app come YouTube passa alla TV un
-link invece di duplicare lo schermo) e l'audio su più stanze.
+Cosa non fa ancora: la duplicazione in HEVC/4K, i video protetti (Apple TV+, film comprati su
+iTunes: quelli si vedono solo su una Apple TV) e l'audio su più stanze.
 
 ## Installarla
 
@@ -64,7 +73,7 @@ e installalo a mano. Con adb ci vuole un minuto:
    (e il debug di rete, se la tua TV lo ha).
 2. Da un computer sulla stessa rete esegui `adb connect <ip-della-tv>:5555` e accetta la richiesta
    che compare sulla TV.
-3. `adb install iRPlay-Mirror-1.2.0.apk`
+3. `adb install iRPlay-Mirror-1.3.0.apk`
 
 Serve Android TV o Google TV 10 o successivi su processore ARM, cioè praticamente qualsiasi TV
 o chiavetta in commercio.
@@ -95,10 +104,24 @@ altro risparmiano una serata.
   centinaio di millisecondi a circa 11 ms. Se un giorno arrivassero B-frame, l'app torna all'SPS
   originale.
 - Dopo il primo collegamento iOS salta `pair-setup` e passa direttamente a `pair-verify`.
+- Con YouTube il telefono non manda un link che la TV possa aprire, ma `mlhls://localhost/master.m3u8`:
+  le playlist stanno sul telefono. La TV le chiede una alla volta su una connessione HTTP
+  "rovesciata", espande gli indirizzi abbreviati dei segmenti di YouTube e le passa a ExoPlayer
+  direttamente dalla memoria, senza aprire altre porte sulla TV.
 - Il bit `0x80` nel campo `flags` dell'annuncio mDNS significa "password richiesta". Se lo metti
   per sbaglio, iOS 27 chiede un PIN e poi rinuncia.
 - In pausa iOS chiude il flusso audio e lo riapre alla ripresa, mentre la sessione resta aperta.
   Se lo interpreti come "la musica è finita", lo schermo continua a saltare avanti e indietro.
+- iOS manda l'audio con circa 1,8 s di anticipo e, una volta al secondo, dice quale campione
+  dovrebbe suonare in quel momento. Suonare i pacchetti appena arrivano funziona, ma la TV finisce
+  1,8 s avanti rispetto al telefono, e a ogni pausa e ripresa la barra salta. I pacchetti devono
+  aspettare il loro momento, come su una Apple TV.
+- In pausa iOS continua a mandare pacchetti per qualche secondo, ed è silenzio puro. Solo il
+  suono vero conta come "la musica è ripartita".
+- I comandi alla musica dalla TV passano per DACP: il telefono manda `DACP-ID` e `Active-Remote`
+  nelle intestazioni RTSP e annuncia `iTunes_Ctrl_<id>` via mDNS. L'ID è un numero a 64 bit e a
+  volte da una delle due parti perde lo zero iniziale, quindi va confrontato come numero.
+  Apple Music risponde 400 a `dacp.playingtime`, ma accetta `beginff`/`playresume`.
 - Il decoder ALAC di riferimento di Apple si fida del numero di campioni scritto in ogni
   pacchetto, e su ARM legge la propria configurazione con i byte al contrario. Qui sono corretti
   entrambi, vedi `third_party/alac/PATCHES.md`.

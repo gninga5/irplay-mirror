@@ -58,6 +58,9 @@ target_compile_options(alac PRIVATE -w)
 add_library(${CMAKE_PROJECT_NAME} SHARED
         jni_bridge.cpp
         airplay_server.cpp
+        airplay_media.cpp
+        hls_playlist.cpp
+        rtsp_message.cpp
         airplay_info.cpp
         airplay_crypto.cpp
         media_streams.cpp

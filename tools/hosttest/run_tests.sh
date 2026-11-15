@@ -33,7 +33,7 @@ for f in ag_enc dp_enc matrix_enc; do
 done
 clang++ -std=c++17 -c -w -fsanitize=address -g -O1 -I"$C/third_party/alac" "$C/third_party/alac/ALACDecoder.cpp" -o "$OUT/alac_ALACDecoder.o"
 clang++ -std=c++17 -c -w -fsanitize=address -g -O1 -I"$C/third_party/alac" "$HERE/alac_enc/ALACEncoder.cpp" -o "$OUT/alacenc_ALACEncoder.o"
-SRC="$C/now_playing.cpp $C/srp_server.cpp $C/sps_rewriter.cpp $C/airplay_server.cpp $C/airplay_info.cpp $C/airplay_crypto.cpp $C/media_streams.cpp $C/nal_parser.cpp $C/net_util.cpp $C/plist_reader.cpp $C/plist_writer.cpp"
+SRC="$C/now_playing.cpp $C/srp_server.cpp $C/sps_rewriter.cpp $C/airplay_server.cpp $C/airplay_media.cpp $C/hls_playlist.cpp $C/rtsp_message.cpp $C/airplay_info.cpp $C/airplay_crypto.cpp $C/media_streams.cpp $C/nal_parser.cpp $C/net_util.cpp $C/plist_reader.cpp $C/plist_writer.cpp"
 clang++ -std=c++20 -Wall -Wextra -Wformat=2 -Werror -Wno-missing-field-initializers \
   -fsanitize=address,undefined -fno-omit-frame-pointer -g -O1 \
   -I"$C" -I"$P" -I"$M/include" -I"$SODIUM/include" -I"$C/third_party/alac" -I"$HERE/alac_enc" \

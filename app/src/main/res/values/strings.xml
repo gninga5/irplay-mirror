@@ -10,6 +10,14 @@
     <string name="receiver_mirroring">Screen mirroring in progress</string>
 
     <string name="label_tv_name">TV name</string>
+    <string name="rename_hint">Press OK to rename</string>
+    <string name="rename_title">TV name</string>
+    <string name="rename_message">This is the name iPhone, iPad and Mac show in Screen Mirroring.</string>
+    <string name="rename_save">Save</string>
+    <string name="rename_cancel">Cancel</string>
+    <string name="rename_reset">Use system name</string>
+    <string name="rename_invalid">Enter a name with at least one visible character.</string>
+    <string name="rename_deferred">The new name will be used when the current session ends.</string>
     <string name="label_ip">IP address</string>
     <string name="ip_ethernet">%1$s · Ethernet</string>
     <string name="ip_wifi">%1$s · Wi-Fi</string>

@@ -95,27 +95,55 @@
                 android:layout_height="match_parent"
                 android:layout_weight="1"
                 android:background="@drawable/bg_card"
+                android:clipToPadding="false"
                 android:orientation="vertical"
                 android:padding="24dp">
 
+                <!-- Nome della TV: selezionabile col D-pad, OK apre la finestra per cambiarlo.
+                     Margini laterali negativi: il bordo di focus sporge senza spostare il testo
+                     (la scheda ha clipToPadding=false, altrimenti verrebbe tagliato). -->
+                <LinearLayout
+                    android:id="@+id/name_row"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginHorizontal="-12dp"
+                    android:background="@drawable/bg_focusable_subtle"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:orientation="vertical"
+                    android:paddingHorizontal="12dp"
+                    android:paddingVertical="8dp">
+
+                    <TextView
+                        style="@style/iRPlay.Label"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="@string/label_tv_name" />
+
+                    <TextView
+                        android:id="@+id/receiver_name"
+                        style="@style/iRPlay.Value"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="4dp"
+                        android:ellipsize="end"
+                        android:maxLines="1" />
+
+                    <TextView
+                        style="@style/iRPlay.Secondary"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="2dp"
+                        android:text="@string/rename_hint"
+                        android:textColor="@color/text_muted"
+                        android:textSize="12sp" />
+                </LinearLayout>
+
                 <TextView
                     style="@style/iRPlay.Label"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="@string/label_tv_name" />
-
-                <TextView
-                    android:id="@+id/receiver_name"
-                    style="@style/iRPlay.Value"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="4dp" />
-
-                <TextView
-                    style="@style/iRPlay.Label"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="20dp"
+                    android:layout_marginTop="12dp"
                     android:text="@string/label_ip" />
 
                 <TextView

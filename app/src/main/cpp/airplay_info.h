@@ -21,7 +21,7 @@
 namespace irplay {
 
     struct ReceiverInfo {
-        std::string name;                 // nome mostrato su iOS, solo ASCII stampabile
+        std::string name;                 // nome mostrato su iOS: UTF-8 valido, 1-63 byte (limite mDNS)
         std::string deviceId;             // MAC virtuale "AA:BB:CC:DD:EE:FF"
         std::string pairingId;            // UUID "pi", 36 caratteri
         std::vector<uint8_t> publicKey;   // Ed25519, 32 byte

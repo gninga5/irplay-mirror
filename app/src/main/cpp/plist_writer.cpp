@@ -11,6 +11,7 @@
 #include "plist_writer.h"
 
 #include <cstring>
+#include <vector>
 
 namespace irplay::plist {
 
@@ -86,11 +87,60 @@ namespace irplay::plist {
             }
         }
 
-        void putAscii(Data& out, const std::string& s) {
-            // Tipo 0x5 = stringa ASCII. Un nome non ASCII richiederebbe UTF-16BE (tipo 0x6):
-            // per ora i byte non ASCII diventano '?', perché il nome del ricevitore è fisso ("iRPlay").
-            putMarker(out, 0x5, s.size());
-            for (unsigned char c : s) out.push_back(c < 0x80 ? c : static_cast<uint8_t>('?'));
+        // Decodifica UTF-8 in code point. Sequenze non valide (troncate, sovralunghe, surrogati)
+        // diventano U+FFFD: il plist resta ben formato anche se il chiamante sbaglia.
+        std::vector<uint32_t> decodeUtf8(const std::string& s) {
+            std::vector<uint32_t> cps;
+            size_t i = 0;
+            while (i < s.size()) {
+                const auto c = static_cast<unsigned char>(s[i]);
+                uint32_t cp;
+                size_t n;
+                if (c < 0x80) { cp = c; n = 1; }
+                else if ((c & 0xE0) == 0xC0) { cp = c & 0x1F; n = 2; }
+                else if ((c & 0xF0) == 0xE0) { cp = c & 0x0F; n = 3; }
+                else if ((c & 0xF8) == 0xF0) { cp = c & 0x07; n = 4; }
+                else { cps.push_back(0xFFFD); ++i; continue; }
+                bool ok = i + n <= s.size();
+                for (size_t k = 1; ok && k < n; ++k) {
+                    const auto cc = static_cast<unsigned char>(s[i + k]);
+                    if ((cc & 0xC0) != 0x80) ok = false;
+                    else cp = (cp << 6) | (cc & 0x3F);
+                }
+                static constexpr uint32_t kMin[5] = {0, 0, 0x80, 0x800, 0x10000};
+                if (!ok || cp < kMin[n] || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) {
+                    cps.push_back(0xFFFD);
+                    ++i;
+                    continue;
+                }
+                cps.push_back(cp);
+                i += n;
+            }
+            return cps;
+        }
+
+        // Tipo 0x5 (ASCII) quando possibile, altrimenti 0x6 (UTF-16BE, con coppie di surrogati
+        // sopra U+FFFF): è così che CoreFoundation codifica le stringhe, e iOS non accetta altro.
+        void putString(Data& out, const std::string& s) {
+            bool ascii = true;
+            for (unsigned char c : s) if (c >= 0x80) { ascii = false; break; }
+            if (ascii) {
+                putMarker(out, 0x5, s.size());
+                out.insert(out.end(), s.begin(), s.end());
+                return;
+            }
+            std::vector<uint16_t> units;
+            for (uint32_t cp : decodeUtf8(s)) {
+                if (cp < 0x10000) {
+                    units.push_back(static_cast<uint16_t>(cp));
+                } else {
+                    cp -= 0x10000;
+                    units.push_back(static_cast<uint16_t>(0xD800 + (cp >> 10)));
+                    units.push_back(static_cast<uint16_t>(0xDC00 + (cp & 0x3FF)));
+                }
+            }
+            putMarker(out, 0x6, units.size());   // la lunghezza è in unità da 16 bit, non in byte
+            for (uint16_t u : units) putBE(out, u, 2);
         }
 
     } // namespace
@@ -108,7 +158,7 @@ namespace irplay::plist {
             offsets.push_back(out.size());
             const Obj& o = f.objs[i];
             if (o.key) {
-                putAscii(out, *o.key);
+                putString(out, *o.key);
                 continue;
             }
             const auto& v = o.value->v;
@@ -122,7 +172,7 @@ namespace irplay::plist {
                 out.push_back(0x23);
                 putBE(out, bits, 8);
             } else if (const auto* s = std::get_if<std::string>(&v)) {
-                putAscii(out, *s);
+                putString(out, *s);
             } else if (const auto* data = std::get_if<Data>(&v)) {
                 putMarker(out, 0x4, data->size());
                 out.insert(out.end(), data->begin(), data->end());

@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Contenuto della finestra "Nome della TV". La tastiera della TV si apre sul campo. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:paddingHorizontal="24dp"
+    android:paddingTop="8dp">
+
+    <TextView
+        style="@style/iRPlay.Secondary"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="@string/rename_message" />
+
+    <EditText
+        android:id="@+id/name_input"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:importantForAutofill="no"
+        android:imeOptions="actionDone"
+        android:inputType="textCapSentences"
+        android:maxLines="1"
+        android:singleLine="true"
+        android:textColor="@color/text_primary"
+        android:textSize="18sp" />
+</LinearLayout>

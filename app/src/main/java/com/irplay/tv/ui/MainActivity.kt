@@ -27,8 +27,12 @@ import android.view.KeyEvent
 import android.view.SurfaceHolder
 import android.view.View
 import android.view.WindowManager
+import android.view.inputmethod.EditorInfo
+import android.widget.EditText
 import android.widget.FrameLayout
+import android.text.InputFilter
 import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import com.irplay.tv.R
 import com.irplay.tv.core.AirPlayService
@@ -60,8 +64,7 @@ class MainActivity : AppCompatActivity() {
         binding.video.holder.addCallback(surfaceCallback)
         binding.root.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> fitVideo() }
 
-        binding.receiverName.text = AirPlayService.DEVICE_NAME
-        binding.step3.text = getString(R.string.step_3, AirPlayService.DEVICE_NAME)
+        binding.nameRow.setOnClickListener { showRenameDialog() }
         binding.licensesButton.setOnClickListener { startActivity(Intent(this, LicensesActivity::class.java)) }
         binding.autoOpenRow.setOnClickListener { onAutoOpenPressed() }
 
@@ -76,6 +79,7 @@ class MainActivity : AppCompatActivity() {
             getString(if (ethernet) R.string.ip_ethernet else R.string.ip_wifi, ip)
         } ?: getString(R.string.receiver_no_network)
         renderAutoOpen()   // anche al ritorno dalla schermata di sistema dei permessi
+        renderName()
     }
 
     override fun onStop() {
@@ -148,6 +152,55 @@ class MainActivity : AppCompatActivity() {
         AppSettings.setAutoOpen(this, !enabled)
         if (!enabled && !Settings.canDrawOverlays(this)) requestOverlayPermission()
         renderAutoOpen()
+    }
+
+    private fun renderName() {
+        val name = AppSettings.tvName(this)
+        binding.receiverName.text = name
+        binding.step3.text = getString(R.string.step_3, name)
+    }
+
+    /**
+     * Finestra per cambiare il nome. Il testo viene ripulito da AppSettings.sanitizeName (stessa
+     * regola del codice nativo) e il servizio ripubblica l'annuncio: subito se nessuno sta
+     * trasmettendo, altrimenti a fine sessione, per non interrompere la duplicazione.
+     */
+    private fun showRenameDialog() {
+        val view = layoutInflater.inflate(R.layout.dialog_rename, null)
+        val input = view.findViewById<EditText>(R.id.name_input).apply {
+            filters = arrayOf(InputFilter.LengthFilter(AppSettings.MAX_NAME_CHARS))
+            setText(AppSettings.tvName(this@MainActivity))
+            setSelection(text.length)
+        }
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(R.string.rename_title)
+            .setView(view)
+            .setPositiveButton(R.string.rename_save, null)   // gestito sotto: con nome non valido resta aperta
+            .setNegativeButton(R.string.rename_cancel, null)
+            .setNeutralButton(R.string.rename_reset) { _, _ -> applyName(null) }
+            .create()
+        dialog.setOnShowListener {
+            val save = dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+            val submit = {
+                if (applyName(input.text.toString())) dialog.dismiss()
+                else input.error = getString(R.string.rename_invalid)
+            }
+            save.setOnClickListener { submit() }
+            input.setOnEditorActionListener { _, action, _ ->
+                if (action == EditorInfo.IME_ACTION_DONE) { submit(); true } else false
+            }
+            input.requestFocus()
+        }
+        dialog.show()
+    }
+
+    /** Salva il nome (null = quello di sistema) e chiede al servizio di applicarlo. */
+    private fun applyName(name: String?): Boolean {
+        if (!AppSettings.setTvName(this, name)) return false
+        renderName()
+        if (ReceiverState.isInSession) Toast.makeText(this, R.string.rename_deferred, Toast.LENGTH_LONG).show()
+        AirPlayService.reload(this)
+        return true
     }
 
     private fun renderAutoOpen() {

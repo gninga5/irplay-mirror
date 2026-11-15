@@ -56,12 +56,21 @@ class AirPlayService : Service() {
     private val registrations = mutableListOf<NsdManager.RegistrationListener>()
     private var started = false
     private var audio: AudioRenderer? = null
+    private var identity: DeviceIdentity? = null
+    private var deviceName = ""
+    // Cambio di nome richiesto durante una sessione: applicato quando finisce, per non
+    // interrompere la duplicazione in corso.
+    @Volatile private var renamePending = false
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         // startForeground va chiamato subito: Android termina il servizio se non arriva entro pochi secondi.
         startInForeground()
+        if (intent?.action == ACTION_RELOAD && started) {
+            if (ReceiverState.isInSession) renamePending = true else scope.launch { republish() }
+            return START_STICKY
+        }
         if (!started) {
             started = true
             acquireMulticastLock()
@@ -81,19 +90,48 @@ class AirPlayService : Service() {
 
                 audio = AudioRenderer(applicationContext).also { NativeBridge.audioSink = it }
                 NativeBridge.sessionListener = sessionListener
-
-                val rtspPort = withContext(Dispatchers.IO) { startNativeServer(identity) }
-                if (rtspPort <= 0) {
-                    Log.e(TAG, "Server RTSP non avviato, servizio fermato")
-                    ReceiverState.set(ReceiverState.Status.Failed)
-                    stopSelf()
-                    return@launch
-                }
-                registerServices(identity, rtspPort)
-                ReceiverState.set(ReceiverState.Status.Ready)
+                this@AirPlayService.identity = identity
+                publish()
             }
         }
         return START_STICKY
+    }
+
+    /** Avvia il server e annuncia la TV con il nome corrente. */
+    private suspend fun publish() {
+        val id = identity ?: return
+        deviceName = AppSettings.tvName(applicationContext)
+        val rtspPort = withContext(Dispatchers.IO) { startNativeServer(id) }
+        if (rtspPort <= 0) {
+            Log.e(TAG, "Server RTSP non avviato, servizio fermato")
+            ReceiverState.set(ReceiverState.Status.Failed)
+            stopSelf()
+            return
+        }
+        registerServices(id, rtspPort)
+        ReceiverState.set(ReceiverState.Status.Ready)
+    }
+
+    /** Ritira l'annuncio mDNS e ferma il server (le connessioni aperte vengono chiuse). */
+    private fun unpublish() {
+        nsd?.let { n ->
+            // unregisterService lancia IllegalArgumentException se la registrazione era già fallita.
+            registrations.forEach { runCatching { n.unregisterService(it) } }
+        }
+        registrations.clear()
+        NativeBridge.stopServer()
+    }
+
+    /**
+     * Nuovo nome: va cambiato sia nell'annuncio mDNS sia in GET /info (iOS li confronta).
+     * Il modo più semplice e sicuro è ripartire da zero: pochi decimi di secondo, fatti solo
+     * quando nessuno sta trasmettendo.
+     */
+    private suspend fun republish() {
+        renamePending = false
+        Log.i(TAG, "Nome della TV cambiato: ripubblico il servizio")
+        withContext(Dispatchers.IO) { unpublish() }
+        publish()
     }
 
     override fun onDestroy() {
@@ -122,7 +160,7 @@ class AirPlayService : Service() {
         val seed = identity.loadSeed()
         try {
             return NativeBridge.startServer(
-                PREFERRED_RTSP_PORT, DEVICE_NAME, identity.deviceId, identity.pairingId,
+                PREFERRED_RTSP_PORT, deviceName.toByteArray(Charsets.UTF_8), identity.deviceId, identity.pairingId,
                 identity.publicKey, FEATURES, MODEL, SRCVERS, encodeTxt(airplayTxt(identity)), seed,
                 preferredFps(),
             )
@@ -175,6 +213,7 @@ class AirPlayService : Service() {
             clientName = ""
             ReceiverState.set(ReceiverState.Status.Ready)
             updateNotification(getString(R.string.receiver_waiting))
+            if (renamePending) scope.launch { republish() }
         }
     }
 
@@ -251,14 +290,14 @@ class AirPlayService : Service() {
         nsd = manager
 
         val airplay = NsdServiceInfo().apply {
-            serviceName = DEVICE_NAME
+            serviceName = deviceName
             serviceType = "_airplay._tcp"
             port = rtspPort
             airplayTxt(id).forEach { (k, v) -> setAttribute(k, v) }
         }
 
         val raop = NsdServiceInfo().apply {
-            serviceName = "${id.raopPrefix}@$DEVICE_NAME"
+            serviceName = "${id.raopPrefix}@$deviceName"
             serviceType = "_raop._tcp"
             port = rtspPort
             raopTxt(id).forEach { (k, v) -> setAttribute(k, v) }
@@ -350,7 +389,7 @@ class AirPlayService : Service() {
         private const val CHANNEL_ID = "irplay_receiver"
         private const val NOTIFICATION_ID = 1
 
-        const val DEVICE_NAME = "iRPlay Mirror"
+
         private const val PREFERRED_RTSP_PORT = 7000
 
         // Feature flags di un ricevitore per mirroring dello schermo (gli stessi di UxPlay).
@@ -366,5 +405,12 @@ class AirPlayService : Service() {
         fun start(context: Context) {
             context.startForegroundService(Intent(context, AirPlayService::class.java))
         }
+
+        /** Applica il nome salvato in AppSettings (subito, o a fine sessione se ce n'è una). */
+        fun reload(context: Context) {
+            context.startForegroundService(Intent(context, AirPlayService::class.java).setAction(ACTION_RELOAD))
+        }
+
+        private const val ACTION_RELOAD = "com.irplay.tv.action.RELOAD"
     }
 }

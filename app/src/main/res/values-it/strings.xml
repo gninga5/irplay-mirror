@@ -7,6 +7,14 @@
     <string name="receiver_mirroring">Duplicazione schermo in corso</string>
 
     <string name="label_tv_name">Nome della TV</string>
+    <string name="rename_hint">Premi OK per cambiarlo</string>
+    <string name="rename_title">Nome della TV</string>
+    <string name="rename_message">È il nome che iPhone, iPad e Mac mostrano in Duplica schermo.</string>
+    <string name="rename_save">Salva</string>
+    <string name="rename_cancel">Annulla</string>
+    <string name="rename_reset">Usa il nome di sistema</string>
+    <string name="rename_invalid">Inserisci un nome con almeno un carattere visibile.</string>
+    <string name="rename_deferred">Il nuovo nome verrà usato al termine della sessione in corso.</string>
     <string name="label_ip">Indirizzo IP</string>
     <string name="ip_ethernet">%1$s · Ethernet</string>
     <string name="ip_wifi">%1$s · Wi-Fi</string>

@@ -30,6 +30,37 @@ namespace irplay {
             return std::all_of(s.begin(), s.end(), [](char c) { return c >= 0x20 && c <= 0x7E; });
         }
 
+        // Nome del ricevitore scelto dall'utente: UTF-8 valido (niente sequenze sovralunghe o
+        // surrogati), 1-63 byte come un'etichetta DNS, nessun carattere di controllo né i
+        // caratteri di direzione del testo (U+202A-202E, U+2066-2069), che permetterebbero di
+        // mostrare su iOS un nome diverso da quello reale.
+        bool isValidName(std::string_view s) {
+            if (s.empty() || s.size() > 63) return false;
+            size_t i = 0;
+            while (i < s.size()) {
+                const auto c = static_cast<unsigned char>(s[i]);
+                size_t n;
+                uint32_t cp;
+                if (c < 0x80) { n = 1; cp = c; }
+                else if ((c & 0xE0) == 0xC0) { n = 2; cp = c & 0x1F; }
+                else if ((c & 0xF0) == 0xE0) { n = 3; cp = c & 0x0F; }
+                else if ((c & 0xF8) == 0xF0) { n = 4; cp = c & 0x07; }
+                else return false;
+                if (i + n > s.size()) return false;
+                for (size_t k = 1; k < n; ++k) {
+                    const auto cc = static_cast<unsigned char>(s[i + k]);
+                    if ((cc & 0xC0) != 0x80) return false;
+                    cp = (cp << 6) | (cc & 0x3F);
+                }
+                static constexpr uint32_t kMin[5] = {0, 0, 0x80, 0x800, 0x10000};
+                if (cp < kMin[n] || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) return false;
+                if (cp < 0x20 || (cp >= 0x7F && cp <= 0x9F)) return false;
+                if ((cp >= 0x202A && cp <= 0x202E) || (cp >= 0x2066 && cp <= 0x2069)) return false;
+                i += n;
+            }
+            return true;
+        }
+
         bool isHex(char c) {
             return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'F') || (c >= 'a' && c <= 'f');
         }
@@ -67,7 +98,7 @@ namespace irplay {
         }
 
         bool isValid(const ReceiverInfo& i) {
-            return isPrintableAscii(i.name, 1, 63)
+            return isValidName(i.name)
                    && isMac(i.deviceId)
                    && isUuid(i.pairingId)
                    && i.publicKey.size() == 32

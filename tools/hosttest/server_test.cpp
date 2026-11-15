@@ -208,12 +208,37 @@ static void testNal() {
     for (size_t cut = 0; cut < avcc.size(); ++cut) CHECK(!nal::parseAvcC(avcc.data(), cut, s, p));
 }
 
+static Bytes infoTxt();
+
+// Nomi scelti dall'utente: UTF-8 valido e senza caratteri pericolosi; nel plist diventano UTF-16.
+static void testNames() {
+    uint8_t seed[32] = {7}, pk[32], sk[64]; crypto_sign_seed_keypair(pk, sk, seed);
+    ReceiverInfo i; i.deviceId = "02:11:22:33:44:55"; i.pairingId = "0f8e2b4a-1234-4abc-9def-0123456789ab";
+    i.publicKey.assign(pk, pk + 32); i.features = 0x5A7FFEE6; i.model = "AppleTV3,2"; i.sourceVersion = "220.68"; i.txtAirPlay = infoTxt();
+    const std::string good = "Salotto più bello \xF0\x9F\x98\x80";   // accenti + emoji (fuori dal piano base)
+    i.name = good;
+    auto p = buildInfoPlists(i);
+    CHECK(p.has_value());
+    if (p) {
+        auto v = plist::parseBinary(p->full.data(), p->full.size());
+        CHECK(v && *v->asDict()->find("name")->asString() == good);
+        std::ofstream("name.plist", std::ios::binary).write((const char*) p->full.data(), p->full.size());
+        CHECK(std::system("plutil -lint name.plist > /dev/null") == 0);   // il parser di Apple lo accetta
+    }
+    const char* bad[] = {"", "Tab\there", "a\x7F", "\u202Eevil",  // U+202E: inverte il testo
+                         "\xC0\xAF", "\xED\xA0\x80", "\xF0\x9F\x98"};          // sovralungo, surrogato, troncato
+    for (const char* b : bad) { i.name = b; CHECK(!buildInfoPlists(i).has_value()); }
+    i.name = std::string(64, 'a'); CHECK(!buildInfoPlists(i).has_value());
+    i.name = std::string(63, 'a'); CHECK(buildInfoPlists(i).has_value());
+}
+
 static Bytes infoTxt() { std::string e = "deviceid=02:11:22:33:44:55"; Bytes b{(uint8_t) e.size()}; b.insert(b.end(), e.begin(), e.end()); return b; }
 
 int main() {
     if (sodium_init() < 0) return 1;
     testPlistReader();
     testNal();
+    testNames();
 
     auto sink = std::make_shared<TestSink>();
     AirPlayServer server(sink);

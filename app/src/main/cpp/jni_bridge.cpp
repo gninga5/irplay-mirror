@@ -200,7 +200,7 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void*) {
 
 JNIEXPORT jint JNICALL
 Java_com_irplay_tv_core_NativeBridge_startServer(
-        JNIEnv* env, jclass, jint preferredPort, jstring name, jstring deviceId, jstring pairingId,
+        JNIEnv* env, jclass, jint preferredPort, jbyteArray name, jstring deviceId, jstring pairingId,
         jbyteArray publicKey, jlong features, jstring model, jstring sourceVersion, jbyteArray txtAirPlay,
         jbyteArray seed, jint maxFps) {
     if (preferredPort < 0 || preferredPort > 65535) return -1;
@@ -208,8 +208,11 @@ Java_com_irplay_tv_core_NativeBridge_startServer(
 
     // Parametri piatti invece di un oggetto Kotlin letto con GetFieldID: R8 rinomina i
     // campi nella build release e la lettura fallirebbe solo lì, senza errori in compilazione.
+    // Il nome arriva come byte UTF-8 standard: GetStringUTFChars produrrebbe "modified UTF-8"
+    // (emoji come coppie di surrogati da 3 byte), che iOS non riconosce.
+    std::vector<uint8_t> nameBytes;
     irplay::ReceiverInfo info;
-    if (!copyString(env, name, 63, info.name)
+    if (!copyBytes(env, name, 63, nameBytes)
         || !copyString(env, deviceId, 17, info.deviceId)
         || !copyString(env, pairingId, 36, info.pairingId)
         || !copyBytes(env, publicKey, 32, info.publicKey)
@@ -218,6 +221,7 @@ Java_com_irplay_tv_core_NativeBridge_startServer(
         || !copyBytes(env, txtAirPlay, 1300, info.txtAirPlay)) {
         return -1;
     }
+    info.name.assign(nameBytes.begin(), nameBytes.end());   // validato in buildInfoPlists
     info.features = static_cast<uint64_t>(features);
     info.maxFps = static_cast<int>(maxFps);   // validato in buildInfoPlists
 

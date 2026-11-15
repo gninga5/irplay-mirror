@@ -74,7 +74,7 @@ object NativeBridge {
     @JvmStatic
     external fun startServer(
         preferredPort: Int,
-        name: String,
+        name: ByteArray,   // UTF-8 standard (vedi jni_bridge.cpp)
         deviceId: String,
         pairingId: String,
         publicKey: ByteArray,

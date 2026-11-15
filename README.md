@@ -36,8 +36,13 @@ iPhone, iPad or Mac on the same network. Pick it and your screen (and sound) is 
 - Can bring itself to the front when you start mirroring (you can turn this off)
 - English and Italian, following the TV language
 
+- Works as an AirPlay speaker too: pick it for music or podcasts and the TV shows what's
+  playing, with artwork and progress
+- Optional PIN, asked the first time a device connects or every time
+- Each TV can have its own name
+
 What it doesn't do (yet): HEVC/4K, AirPlay "video" (the kind where YouTube hands the TV a
-URL), multi-room audio, and there's no PIN, so anyone on your network can mirror to it.
+URL) and multi-room audio.
 
 ## Installing
 
@@ -114,7 +119,9 @@ It stands on the shoulders of [UxPlay](https://github.com/FDH2/UxPlay) and RPiPl
 reverse-engineering work on the protocol made this possible. The FairPlay part uses
 *playfair* (GPL-3) and reply tables by Juho Vähä-Herttua (LGPL-2.1+). Crypto comes from
 [Mbed TLS](https://github.com/Mbed-TLS/mbedtls) (Apache-2.0) and
-[libsodium](https://libsodium.org) (ISC). The full notices are in the app under *Licenses*.
+[libsodium](https://libsodium.org) (ISC). Apple Lossless audio is decoded with Apple's
+[ALAC](https://github.com/macosforge/alac) reference decoder (Apache-2.0), with a bounds fix
+described in `third_party/alac/PATCHES.md`. The full notices are in the app under *Licenses*.
 
 iRPlay Mirror is an independent project and is not affiliated with or endorsed by Apple Inc.
 AirPlay, iPhone, iPad and Mac are trademarks of Apple Inc.

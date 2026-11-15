@@ -1,20 +1,23 @@
 /*
  * AudioRenderer.kt
- * Scopo: decodifica dell'audio del mirroring (AAC-ELD, 44,1 kHz, stereo, 480 campioni
- * per frame) e riproduzione con AudioTrack a bassa latenza.
+ * Scopo: riproduzione dell'audio AirPlay con AudioTrack, in due modalità.
+ *
+ *  - Duplicazione schermo (AAC-ELD, 44,1 kHz, stereo, 480 campioni per frame): conta la
+ *    latenza. Coda di ~100 ms, AudioTrack in PERFORMANCE_MODE_LOW_LATENCY, buffer piccolo.
+ *  - Musica (la TV scelta come altoparlante): conta la continuità. iOS manda ALAC (che il
+ *    codice nativo ha già trasformato in PCM 16 bit) o AAC-LC. Coda di qualche secondo,
+ *    perché all'inizio del brano iOS invia i pacchetti a raffica, e buffer AudioTrack ampio:
+ *    sui SoC TV lenti un buffer minimo produce crepitii quando la CPU è occupata.
  *
  * Perché così:
- *  - MediaCodec "audio/mp4a-latm" con csd-0 = AudioSpecificConfig: il decoder AAC
- *    software di Android (presente su tutte le TV da Android 10) supporta l'ELD.
+ *  - MediaCodec "audio/mp4a-latm" con csd-0 = AudioSpecificConfig per AAC: il decoder AAC
+ *    software di Android (presente su tutte le TV da Android 10) supporta anche l'ELD.
  *    I byte F8 E8 50 00 descrivono ELD, 44,1 kHz, 2 canali, 480 campioni per frame.
- *  - Un thread dedicato con coda limitata: i pacchetti arrivano dal thread di rete,
- *    che non deve mai attendere il decoder. Se la coda si riempie si scartano i
- *    pacchetti più vecchi: meglio un piccolo salto che una latenza che cresce.
- *  - AudioTrack in MODE_STREAM con scrittura bloccante: è la scrittura stessa a dare il
- *    ritmo alla riproduzione. PERFORMANCE_MODE_LOW_LATENCY chiede il percorso audio
- *    veloce, dove la TV lo offre.
- *  - Audio focus: richiesto all'avvio dello stream, rilasciato alla fine. Se un'altra app
- *    prende il focus, l'audio dell'iPhone viene silenziato invece di sovrapporsi.
+ *  - Un thread dedicato con coda limitata: i pacchetti arrivano dal thread di rete, che non
+ *    deve mai attendere il decoder. Oltre il limite si scartano i più vecchi.
+ *  - Scrittura bloccante su AudioTrack in MODE_STREAM: è la scrittura stessa a dare il ritmo.
+ *  - Audio focus richiesto all'avvio dello stream e rilasciato alla fine: se un'altra app lo
+ *    prende, l'audio dell'iPhone viene silenziato invece di sovrapporsi.
  *
  * Volume AirPlay: iOS invia dB da -30 (minimo) a 0; -144 significa muto.
  */
@@ -34,6 +37,7 @@ import com.irplay.tv.core.NativeBridge
 import java.nio.ByteBuffer
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.pow
 
 class AudioRenderer(context: Context) : NativeBridge.AudioSink {
@@ -45,25 +49,33 @@ class AudioRenderer(context: Context) : NativeBridge.AudioSink {
         .build()
     private val queue = LinkedBlockingQueue<ByteArray>(QUEUE_CAPACITY)
     private val lock = Any()
+    private val flushRequested = AtomicBoolean(false)
 
     private var worker: Thread? = null              // protetto da lock
     private var focusRequest: AudioFocusRequest? = null   // protetto da lock
+    @Volatile private var maxBacklog = BACKLOG_MIRRORING
     @Volatile private var track: AudioTrack? = null
     @Volatile private var gain = 1f
     @Volatile private var focusFactor = 1f
 
+    /** csd = null: PCM 16 bit, nessun decoder. */
+    private class Config(val csd: ByteArray?, val profile: Int, val music: Boolean)
+
     override fun onAudioStarted(codecType: Int) {
         val config = when (codecType) {
-            CT_AAC_ELD -> Config(AAC_ELD_CSD, MediaCodecInfo.CodecProfileLevel.AACObjectELD)
-            CT_AAC_LC -> Config(AAC_LC_CSD, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
+            CT_PCM -> Config(null, 0, music = true)
+            CT_AAC_LC -> Config(AAC_LC_CSD, MediaCodecInfo.CodecProfileLevel.AACObjectLC, music = true)
+            CT_AAC_ELD -> Config(AAC_ELD_CSD, MediaCodecInfo.CodecProfileLevel.AACObjectELD, music = false)
             else -> {
-                Log.w(TAG, "Formato audio non supportato (ct=$codecType): solo AAC-ELD e AAC-LC")
+                Log.w(TAG, "Formato audio non supportato (ct=$codecType)")
                 return
             }
         }
         synchronized(lock) {
             stopWorkerLocked()
             queue.clear()
+            flushRequested.set(false)
+            maxBacklog = if (config.music) BACKLOG_MUSIC else BACKLOG_MIRRORING
             requestFocusLocked()
             worker = Thread({ run(config) }, "iRPlay-Audio").apply {
                 priority = Thread.MAX_PRIORITY
@@ -82,12 +94,17 @@ class AudioRenderer(context: Context) : NativeBridge.AudioSink {
 
     /**
      * L'orologio audio dell'iPhone e quello della TV non coincidono mai esattamente: se l'iPhone
-     * è un po' più veloce, la coda cresce lentamente e con lei il ritardo. Oltre MAX_BACKLOG
-     * frame (~100 ms) si scartano i più vecchi, così la latenza resta costante.
+     * è un po' più veloce la coda cresce lentamente, e con lei il ritardo. Oltre maxBacklog si
+     * scartano i pacchetti più vecchi, così la latenza resta limitata.
      */
     override fun onAudioFrame(data: ByteArray) {
-        while (queue.size >= MAX_BACKLOG) queue.poll()
+        while (queue.size >= maxBacklog) queue.poll()
         queue.offer(data)
+    }
+
+    override fun onAudioFlush() {
+        queue.clear()
+        flushRequested.set(true)   // il thread audio svuota anche AudioTrack e decoder
     }
 
     override fun onVolume(db: Float) {
@@ -99,27 +116,39 @@ class AudioRenderer(context: Context) : NativeBridge.AudioSink {
 
     // ------------------------------------------------------------ thread "iRPlay-Audio"
 
-    private class Config(val csd: ByteArray, val profile: Int)
-
     private fun run(config: Config) {
         var codec: MediaCodec? = null
         try {
-            codec = MediaCodec.createDecoderByType(MIME)
-            val format = MediaFormat.createAudioFormat(MIME, SAMPLE_RATE, CHANNELS).apply {
-                setByteBuffer("csd-0", ByteBuffer.wrap(config.csd))
-                setInteger(MediaFormat.KEY_AAC_PROFILE, config.profile)
-                setInteger(MediaFormat.KEY_IS_ADTS, 0)
+            if (config.csd != null) {
+                codec = MediaCodec.createDecoderByType(MIME).apply {
+                    configure(MediaFormat.createAudioFormat(MIME, SAMPLE_RATE, CHANNELS).apply {
+                        setByteBuffer("csd-0", ByteBuffer.wrap(config.csd))
+                        setInteger(MediaFormat.KEY_AAC_PROFILE, config.profile)
+                        setInteger(MediaFormat.KEY_IS_ADTS, 0)
+                    }, null, null, 0)
+                    start()
+                }
             }
-            codec.configure(format, null, null, 0)
-            codec.start()
-            var out = createTrack(SAMPLE_RATE, CHANNELS)
+            var out = createTrack(SAMPLE_RATE, CHANNELS, config.music)
             track = out
             applyVolume()
             out.play()
 
             val info = MediaCodec.BufferInfo()
             while (!Thread.currentThread().isInterrupted) {
+                if (flushRequested.getAndSet(false)) {
+                    // Pausa o salto nel brano: via anche quello che AudioTrack ha già in buffer,
+                    // altrimenti si sentirebbe ancora mezzo secondo del punto precedente.
+                    out.pause()
+                    out.flush()
+                    codec?.flush()
+                    out.play()
+                }
                 val frame = queue.poll(POLL_MS, TimeUnit.MILLISECONDS)
+                if (codec == null) {
+                    if (frame != null && frame.isNotEmpty()) out.write(frame, 0, frame.size, AudioTrack.WRITE_BLOCKING)
+                    continue
+                }
                 if (frame != null) {
                     val index = codec.dequeueInputBuffer(INPUT_TIMEOUT_US)
                     if (index >= 0) {
@@ -151,7 +180,7 @@ class AudioRenderer(context: Context) : NativeBridge.AudioSink {
                         val ch = f.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
                         if (rate != out.sampleRate || ch != out.channelCount) {
                             out.release()
-                            out = createTrack(rate, ch)
+                            out = createTrack(rate, ch, config.music)
                             track = out
                             applyVolume()
                             out.play()
@@ -183,12 +212,13 @@ class AudioRenderer(context: Context) : NativeBridge.AudioSink {
         }
     }
 
-    private fun createTrack(rate: Int, channels: Int): AudioTrack {
+    private fun createTrack(rate: Int, channels: Int, music: Boolean): AudioTrack {
         val mask = if (channels == 1) AudioFormat.CHANNEL_OUT_MONO else AudioFormat.CHANNEL_OUT_STEREO
         val min = AudioTrack.getMinBufferSize(rate, mask, AudioFormat.ENCODING_PCM_16BIT)
-        // Il doppio del minimo: con il minimo esatto, i SoC TV più lenti vanno in underrun
-        // (crepitii) quando il decoder video occupa la CPU.
-        val size = if (min > 0) min * 2 else rate * channels * 2 / 10
+        // Duplicazione: il doppio del minimo, compromesso tra latenza e crepitii sui SoC lenti.
+        // Musica: quattro volte, la latenza non conta e la continuità sì.
+        val factor = if (music) 4 else 2
+        val size = if (min > 0) min * factor else rate * channels * 2 / 10
         return AudioTrack.Builder()
             .setAudioAttributes(attributes)
             .setAudioFormat(
@@ -200,7 +230,9 @@ class AudioRenderer(context: Context) : NativeBridge.AudioSink {
             )
             .setTransferMode(AudioTrack.MODE_STREAM)
             .setBufferSizeInBytes(size)
-            .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
+            .setPerformanceMode(
+                if (music) AudioTrack.PERFORMANCE_MODE_NONE else AudioTrack.PERFORMANCE_MODE_LOW_LATENCY
+            )
             .build()
     }
 
@@ -250,12 +282,14 @@ class AudioRenderer(context: Context) : NativeBridge.AudioSink {
         private const val MIME = MediaFormat.MIMETYPE_AUDIO_AAC
         private const val SAMPLE_RATE = 44100
         private const val CHANNELS = 2
+        private const val CT_PCM = 1
         private const val CT_AAC_LC = 4
         private const val CT_AAC_ELD = 8
         private val AAC_ELD_CSD = byteArrayOf(0xF8.toByte(), 0xE8.toByte(), 0x50, 0x00)
         private val AAC_LC_CSD = byteArrayOf(0x12, 0x10)   // LC, 44,1 kHz, stereo
-        private const val QUEUE_CAPACITY = 64
-        private const val MAX_BACKLOG = 10                 // 10 frame ELD da 480 campioni = ~109 ms
+        private const val QUEUE_CAPACITY = 1024
+        private const val BACKLOG_MIRRORING = 10           // 10 frame ELD da 480 campioni = ~109 ms
+        private const val BACKLOG_MUSIC = 512              // 512 pacchetti ALAC da 352 campioni = ~4 s
         private const val POLL_MS = 20L
         private const val INPUT_TIMEOUT_US = 10_000L
         private const val JOIN_TIMEOUT_MS = 500L

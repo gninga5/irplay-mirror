@@ -23,6 +23,10 @@ Tabelle di risposta FairPlay (fairplay_tables.h)
   Copyright (C) 2018 Juho Vähä-Herttua, da UxPlay / RPiPlay.
   Licenza: GNU Lesser General Public License v2.1 o successiva.
 
+Decoder Apple Lossless (ALAC)
+  Copyright (c) 2011 Apple Inc. (https://github.com/macosforge/alac).
+  Licenza: Apache License 2.0. Modificato: vedi third_party/alac/PATCHES.md nel codice sorgente.
+
 Mbed TLS 3.6
   Copyright The Mbed TLS Contributors.
   Licenza: Apache License 2.0 (https://www.apache.org/licenses/LICENSE-2.0).

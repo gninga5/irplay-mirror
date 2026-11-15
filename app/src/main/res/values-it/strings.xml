@@ -59,6 +59,13 @@
     <string name="pin_overlay_title">Inserisci questo codice sul dispositivo</string>
     <string name="pin_overlay_hint">iPhone, iPad o Mac lo chiederanno per collegarsi a questa TV.</string>
     <string name="pin_notification">Codice di associazione: %1$s</string>
+    <string name="receiver_playing">Audio in riproduzione</string>
+    <string name="status_short_playing">In riproduzione</string>
+    <string name="status_playing">Audio da %1$s</string>
+    <string name="np_label">In riproduzione</string>
+    <string name="np_unknown_title">Audio AirPlay</string>
+    <string name="np_source">Da %1$s · premi INDIETRO per interrompere</string>
+    <string name="np_artwork_description">Copertina dell\'album</string>
     <string name="licenses_button">Licenze</string>
     <string name="licenses_title">Licenze</string>
     <string name="licenses_hint">Usa le frecce su e giù del telecomando per scorrere.</string>

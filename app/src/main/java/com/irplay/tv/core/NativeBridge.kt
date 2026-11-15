@@ -34,10 +34,21 @@ object NativeBridge {
 
     /** Destinatario dell'audio decifrato (AudioRenderer, legato al servizio). */
     interface AudioSink {
+        /** codecType: 1 = PCM 16 bit (ALAC già decodificato in C++), 4 = AAC-LC, 8 = AAC-ELD. */
         fun onAudioStarted(codecType: Int)
         fun onAudioStopped()
         fun onAudioFrame(data: ByteArray)
         fun onVolume(db: Float)
+        /** Pausa o salto nel brano: l'audio in coda va scartato. */
+        fun onAudioFlush()
+    }
+
+    /** Informazioni sul brano (solo audio AirPlay, non duplicazione). */
+    interface NowPlayingListener {
+        fun onMetadata(title: String, artist: String, album: String)
+        /** JPEG o PNG; array vuoto = nessuna copertina. */
+        fun onArtwork(image: ByteArray)
+        fun onProgress(positionMs: Long, durationMs: Long)
     }
 
     /** Eventi del PIN (pair-pin-start / pair-setup-pin). */
@@ -64,6 +75,7 @@ object NativeBridge {
     @Volatile var audioSink: AudioSink? = null
     @Volatile var sessionListener: SessionListener? = null
     @Volatile var pinListener: PinListener? = null
+    @Volatile var nowPlayingListener: NowPlayingListener? = null
 
     /**
      * Calcola la chiave pubblica Ed25519 (32 byte) da un seed di 32 byte.
@@ -157,6 +169,24 @@ object NativeBridge {
 
     @JvmStatic
     fun onVolume(db: Float) = guarded("volume") { audioSink?.onVolume(db) }
+
+    @JvmStatic
+    fun onAudioFlush() = guarded("audio") { audioSink?.onAudioFlush() }
+
+    @JvmStatic
+    fun onMetadata(title: ByteArray, artist: ByteArray, album: ByteArray) = guarded("metadati") {
+        nowPlayingListener?.onMetadata(
+            String(title, Charsets.UTF_8), String(artist, Charsets.UTF_8), String(album, Charsets.UTF_8),
+        )
+    }
+
+    @JvmStatic
+    fun onArtwork(image: ByteArray) = guarded("copertina") { nowPlayingListener?.onArtwork(image) }
+
+    @JvmStatic
+    fun onProgress(positionMs: Long, durationMs: Long) = guarded("avanzamento") {
+        nowPlayingListener?.onProgress(positionMs, durationMs)
+    }
 
     @JvmStatic
     fun onPinRequested(pin: String) = guarded("PIN") { pinListener?.onPinRequested(pin) }

@@ -33,6 +33,7 @@
 #include "log.h"
 #include "media_streams.h"
 #include "net_util.h"
+#include "now_playing.h"
 #include "plist_reader.h"
 
 namespace irplay {
@@ -58,6 +59,8 @@ namespace irplay {
 
         constexpr size_t kMaxHeaderBytes = 16 * 1024;
         constexpr size_t kMaxBodyBytes   = 64 * 1024;   // fp-setup = 164 B, i plist di SETUP pesano pochi KB
+        // Unica eccezione: la copertina dell'album (SET_PARAMETER image/jpeg) può superare i 64 KB.
+        constexpr size_t kMaxArtworkBytes = 2 * 1024 * 1024;
         constexpr size_t kMaxHeaders     = 64;
         constexpr size_t kMaxClients     = 6;
         constexpr int    kIdleTimeoutSec = 60;          // connessione senza sessione
@@ -94,14 +97,14 @@ namespace irplay {
 
 // Solo cifre decimali, niente segno né spazi interni, con limite massimo:
 // rifiuta valori come "-1", "1e9" o "123abc" invece di interpretarli a metà.
-        bool parseContentLength(std::string_view v, size_t& out) {
+        bool parseContentLength(std::string_view v, size_t maxBody, size_t& out) {
             if (v.empty() || v.size() > 7) return false;
             size_t n = 0;
             for (char c : v) {
                 if (c < '0' || c > '9') return false;
                 n = n * 10 + static_cast<size_t>(c - '0');
             }
-            if (n > kMaxBodyBytes) return false;
+            if (n > maxBody) return false;
             out = n;
             return true;
         }
@@ -151,7 +154,10 @@ namespace irplay {
                 // al server una richiesta "nascosta" dentro un'altra: si scarta tutto.
                 if (iequals(name, "Transfer-Encoding")) return -1;
                 if (iequals(name, "Content-Length")) {
-                    if (haveLength || !parseContentLength(value, contentLength)) return -1;
+                    // Il limite dipende dal metodo, già noto dalla prima riga: solo SET_PARAMETER
+                    // (copertine) può avere un corpo grande.
+                    const size_t maxBody = req.method == "SET_PARAMETER" ? kMaxArtworkBytes : kMaxBodyBytes;
+                    if (haveLength || !parseContentLength(value, maxBody, contentLength)) return -1;
                     haveLength = true;
                 }
                 if (req.headers.size() >= kMaxHeaders) return -1;
@@ -352,15 +358,53 @@ namespace irplay {
         if (m == "SET_PARAMETER") {
             const std::string* ct = req.header("Content-Type");
             float db;
-            if (ct && iequals(*ct, "text/parameters") && parseVolume(req.body, db)) {
-                volumeDb_ = db;
-                sink_->onVolume(db);
+            int64_t pos, dur;
+            if (ct && iequals(*ct, "text/parameters")) {
+                if (parseVolume(req.body, db)) {
+                    volumeDb_ = db;
+                    sink_->onVolume(db);
+                } else if (nowplaying::parseProgress(req.body.data(), req.body.size(), pos, dur)) {
+                    sink_->onProgress(pos, dur);
+                }
+            } else if (ct && iequals(*ct, "application/x-dmap-tagged")) {
+                nowplaying::Metadata md;
+                if (nowplaying::parseDmap(req.body.data(), req.body.size(), md)) {
+                    sink_->onMetadata(md.title, md.artist, md.album);
+                }
+            } else if (ct && (iequals(*ct, "image/jpeg") || iequals(*ct, "image/png") || iequals(*ct, "image/none"))) {
+                // Si inoltrano solo immagini che iniziano davvero come JPEG (FF D8 FF) o PNG
+                // (89 50 4E 47): il Content-Type lo decide il mittente e non basta.
+                const auto& b = req.body;
+                const bool jpeg = b.size() > 3 && b[0] == 0xFF && b[1] == 0xD8 && b[2] == 0xFF;
+                const bool png = b.size() > 8 && b[0] == 0x89 && b[1] == 'P' && b[2] == 'N' && b[3] == 'G';
+                if (jpeg || png) sink_->onArtwork(b.data(), b.size());
+                else if (b.empty()) sink_->onArtwork(nullptr, 0);   // brano senza copertina
             }
-            // Metadati, copertina e avanzamento (solo AirPlay audio): accettati e ignorati.
             return sendResponse(fd, &req, 200, "OK", jack);
         }
 
-        if (m == "FLUSH" || (m == "POST" && (u == "/feedback" || u == "/audioMode" || u == "/command"))) {
+        if (m == "FLUSH") {
+            // "RTP-Info: seq=1234;rtptime=..." indica il primo pacchetto valido dopo la pausa o il
+            // salto: quelli precedenti in coda vanno scartati.
+            int next = -1;
+            if (const std::string* info = req.header("RTP-Info")) {
+                const size_t p = info->find("seq=");
+                if (p != std::string::npos) {
+                    uint32_t v = 0;
+                    size_t i = p + 4, digits = 0;
+                    while (i < info->size() && digits < 6 && (*info)[i] >= '0' && (*info)[i] <= '9') {
+                        v = v * 10 + static_cast<uint32_t>((*info)[i] - '0');
+                        ++i;
+                        ++digits;
+                    }
+                    if (digits > 0 && v <= 0xFFFF) next = static_cast<int>(v);
+                }
+            }
+            if (st.session) st.session->flushAudio(next);
+            return sendResponse(fd, &req, 200, "OK", jack);
+        }
+
+        if (m == "POST" && (u == "/feedback" || u == "/audioMode" || u == "/command")) {
             return sendResponse(fd, &req, 200, "OK", jack);
         }
 
@@ -664,8 +708,10 @@ namespace irplay {
                     LOGI("Stream video pronto sulla porta %d", port);
                 } else if (*type == 96) {
                     const uint64_t* ct = findUInt(*sd, "ct");
+                    const uint64_t* rcp = findUInt(*sd, "controlPort");   // porta dell'iPhone per le ritrasmissioni
+                    const uint16_t remoteControl = (rcp && *rcp <= 65535) ? static_cast<uint16_t>(*rcp) : 0;
                     uint16_t dataPort = 0, controlPort = 0;
-                    if (!st.session->startAudio(ct ? static_cast<int>(*ct & 0xFF) : 0, dataPort, controlPort)) {
+                    if (!st.session->startAudio(ct ? static_cast<int>(*ct & 0xFF) : 0, remoteControl, dataPort, controlPort)) {
                         sendResponse(fd, &req, 500, "Internal Server Error");
                         return false;
                     }
@@ -887,7 +933,7 @@ namespace irplay {
             }
             idleSec = 0;
             buf.insert(buf.end(), chunk, chunk + n);
-            if (buf.size() > kMaxHeaderBytes + kMaxBodyBytes + 4) {
+            if (buf.size() > kMaxHeaderBytes + kMaxArtworkBytes + 4) {
                 LOGW("Buffer oltre il limite da %s, chiudo", peer.c_str());
                 break;
             }

@@ -40,6 +40,14 @@ namespace irplay {
         virtual void onAudioStarted(int codecType) = 0;
         virtual void onAudioStopped() = 0;
         virtual void onAudioFrame(const uint8_t* data, size_t len) = 0;
+        /** FLUSH dal client (pausa o salto nel brano): l'audio già in coda va scartato. */
+        virtual void onAudioFlush() = 0;
+        /** Brano in riproduzione (audio AirPlay): stringhe UTF-8, possono essere vuote. */
+        virtual void onMetadata(const std::string& title, const std::string& artist, const std::string& album) = 0;
+        /** Copertina JPEG o PNG (già controllata nella firma e nella dimensione); len 0 = nessuna. */
+        virtual void onArtwork(const uint8_t* data, size_t len) = 0;
+        /** Avanzamento del brano. */
+        virtual void onProgress(int64_t positionMs, int64_t durationMs) = 0;
         /** Volume AirPlay in dB: da -30 (minimo) a 0; -144 = muto. */
         virtual void onVolume(float db) = 0;
 

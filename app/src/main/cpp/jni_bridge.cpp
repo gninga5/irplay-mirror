@@ -35,7 +35,8 @@ namespace {
     jclass gBridge = nullptr;   // global ref
     jmethodID gOnSessionStarted, gOnSessionEnded, gOnVideoStarted, gOnVideoStopped, gOnVideoConfig,
             gOnVideoFrame, gOnAudioStarted, gOnAudioStopped, gOnAudioFrame, gOnVolume,
-            gOnPinRequested, gOnPinDismissed, gOnClientTrusted;
+            gOnPinRequested, gOnPinDismissed, gOnClientTrusted,
+            gOnAudioFlush, gOnMetadata, gOnArtwork, gOnProgress;
 
     std::mutex gServerMutex;                       // start e stop possono arrivare da thread Kotlin diversi
     std::unique_ptr<irplay::AirPlayServer> gServer;
@@ -143,6 +144,33 @@ namespace {
 
         void onPinDismissed() override { callVoid(gOnPinDismissed); }
 
+        void onAudioFlush() override { callVoid(gOnAudioFlush); }
+
+        // Stringhe come byte UTF-8: titoli con emoji non sono "modified UTF-8" (vedi intestazione).
+        void onMetadata(const std::string& title, const std::string& artist, const std::string& album) override {
+            JNIEnv* env = currentEnv();
+            if (!env) return;
+            auto bytes = [&](const std::string& s) { return toJava(env, reinterpret_cast<const uint8_t*>(s.data()), s.size()); };
+            jbyteArray t = bytes(title), ar = bytes(artist), al = bytes(album);
+            if (t && ar && al) env->CallStaticVoidMethod(gBridge, gOnMetadata, t, ar, al);
+            for (jbyteArray a : {t, ar, al}) if (a) env->DeleteLocalRef(a);
+            clearException(env);
+        }
+
+        void onArtwork(const uint8_t* data, size_t len) override {
+            JNIEnv* env = currentEnv();
+            if (!env) return;
+            jbyteArray a = toJava(env, data, len);
+            if (a == nullptr) { clearException(env); return; }
+            env->CallStaticVoidMethod(gBridge, gOnArtwork, a);
+            env->DeleteLocalRef(a);
+            clearException(env);
+        }
+
+        void onProgress(int64_t positionMs, int64_t durationMs) override {
+            callVoid(gOnProgress, static_cast<jlong>(positionMs), static_cast<jlong>(durationMs));
+        }
+
         void onClientTrusted(const uint8_t publicKey[32]) override {
             JNIEnv* env = currentEnv();
             if (!env) return;
@@ -220,7 +248,11 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void*) {
                     && resolve(env, gOnVolume, "onVolume", "(F)V")
                     && resolve(env, gOnPinRequested, "onPinRequested", "(Ljava/lang/String;)V")
                     && resolve(env, gOnPinDismissed, "onPinDismissed", "()V")
-                    && resolve(env, gOnClientTrusted, "onClientTrusted", "([B)V");
+                    && resolve(env, gOnClientTrusted, "onClientTrusted", "([B)V")
+                    && resolve(env, gOnAudioFlush, "onAudioFlush", "()V")
+                    && resolve(env, gOnMetadata, "onMetadata", "([B[B[B)V")
+                    && resolve(env, gOnArtwork, "onArtwork", "([B)V")
+                    && resolve(env, gOnProgress, "onProgress", "(JJ)V");
     return ok ? JNI_VERSION_1_6 : JNI_ERR;
 }
 

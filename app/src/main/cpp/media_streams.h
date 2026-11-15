@@ -2,7 +2,9 @@
  * media_streams.h
  * Scopo: i canali dati di una sessione di mirroring, aperti con SETUP.
  *  - MirrorStream: TCP, video H.264 cifrato AES-CTR. Pacchetti con header di 128 byte.
- *  - AudioStream:  UDP, RTP con AAC-ELD cifrato AES-CBC, più la porta di controllo RTCP.
+ *  - AudioStream:  UDP, RTP cifrato AES-CBC, più la porta di controllo. Due modalità:
+ *                  duplicazione (AAC-ELD, riproduzione immediata) e musica (ALAC/AAC/PCM, con
+ *                  riordino dei pacchetti e richiesta di ritrasmissione di quelli persi).
  *  - TimingClient: UDP, richieste di timing NTP verso l'iPhone (protocollo AirPlay 1).
  *  - Session:      possiede i tre canali, la chiave di sessione e il timestamp di attività
  *                  usato dal watchdog.
@@ -13,11 +15,13 @@
  */
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <vector>
 
 #include <netinet/in.h>
 
@@ -55,28 +59,60 @@ namespace irplay {
         std::thread thread_;
     };
 
+    /** Valori di "ct" in SETUP (formato audio scelto da iOS). */
+    enum AudioCodec : int { kCodecPcm = 1, kCodecAlac = 2, kCodecAacLc = 4, kCodecAacEld = 8 };
+
+    class AlacDecoder;   // involucro del decoder Apple, definito in media_streams.cpp
+
     class AudioStream {
     public:
         AudioStream(SessionSink& sink, const sockaddr_in6& peer, const uint8_t sessionKey[16],
-                    const uint8_t iv[16], int codecType, std::atomic<int64_t>& activity);
+                    const uint8_t iv[16], int codecType, uint16_t remoteControlPort,
+                    std::atomic<int64_t>& activity);
         ~AudioStream();
         bool start(uint16_t& dataPort, uint16_t& controlPort);
         void stop();
+        /** FLUSH (pausa, salto nel brano): scarta l'audio in coda. nextSeq < 0 = sconosciuto. */
+        void requestFlush(int nextSeq);
 
     private:
+        struct Slot {
+            bool used = false;
+            uint16_t seq = 0;
+            std::vector<uint8_t> data;
+        };
+        static constexpr size_t kSlots = 256;   // ~2 s di pacchetti ALAC da 352 campioni
+
         void run();
-        void onData(uint8_t* buf, size_t len);
+        void onRtp(uint8_t* buf, size_t len);
+        void insert(uint16_t seq, const uint8_t* payload, size_t len);
+        void drain(int64_t now);
+        void resetBuffer();
+        void requestResend(uint16_t first, uint16_t count);
+        void deliver(const uint8_t* payload, size_t len);
 
         SessionSink& sink_;
         sockaddr_in6 peer_;
+        sockaddr_in6 remoteControl_;
         crypto::AudioDecryptor decryptor_;
         int codecType_;
+        bool music_;                     // tutto tranne AAC-ELD (duplicazione schermo)
         std::atomic<int64_t>& activity_;
         int dataFd_ = -1, controlFd_ = -1;
         std::atomic<bool> running_{false};
-        bool haveSeq_ = false;
-        uint16_t lastSeq_ = 0;
+        std::atomic<int> flushSeq_{-2};  // -2 = nessun flush in attesa
         std::thread thread_;
+
+        // Stato confinato al thread audio.
+        bool haveSeq_ = false;
+        uint16_t lastSeq_ = 0;           // duplicazione: ultimo numero di sequenza riprodotto
+        uint16_t expected_ = 0;          // musica: prossimo pacchetto da riprodurre
+        std::array<Slot, kSlots> slots_;
+        size_t buffered_ = 0;
+        int64_t gapSinceMs_ = 0;
+        uint16_t resendCounter_ = 0;
+        std::unique_ptr<AlacDecoder> alac_;
+        std::vector<uint8_t> pcm_;
     };
 
     class TimingClient {
@@ -105,7 +141,8 @@ namespace irplay {
 
         int startTiming(uint16_t remotePort);
         int startMirror(uint64_t streamConnectionId);
-        bool startAudio(int codecType, uint16_t& dataPort, uint16_t& controlPort);
+        bool startAudio(int codecType, uint16_t remoteControlPort, uint16_t& dataPort, uint16_t& controlPort);
+        void flushAudio(int nextSeq);
         void stopMirror();
         void stopAudio();
 

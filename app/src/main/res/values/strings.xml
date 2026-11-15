@@ -62,6 +62,13 @@
     <string name="pin_overlay_title">Enter this code on your device</string>
     <string name="pin_overlay_hint">iPhone, iPad or Mac will ask for it to connect to this TV.</string>
     <string name="pin_notification">Pairing code: %1$s</string>
+    <string name="receiver_playing">Playing audio</string>
+    <string name="status_short_playing">Playing</string>
+    <string name="status_playing">Playing audio from %1$s</string>
+    <string name="np_label">Now playing</string>
+    <string name="np_unknown_title">AirPlay audio</string>
+    <string name="np_source">From %1$s · press BACK to stop</string>
+    <string name="np_artwork_description">Album artwork</string>
     <string name="licenses_button">Licenses</string>
     <string name="licenses_title">Licenses</string>
     <string name="licenses_hint">Use the up and down arrows on the remote to scroll.</string>

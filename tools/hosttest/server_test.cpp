@@ -9,6 +9,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
+#include <cmath>
 #include <cstring>
 #include <fstream>
 #include <mutex>
@@ -22,6 +23,10 @@
 #include <sodium.h>
 
 #include "airplay_server.h"
+#include "now_playing.h"
+#include "ALACEncoder.h"
+#include "ALACDecoder.h"
+#include "ALACBitUtilities.h"
 #include "nal_parser.h"
 #include "plist_reader.h"
 #include "plist_writer.h"
@@ -67,6 +72,12 @@ public:
     void onPinRequested(const std::string& pin) override { push({"pin", Bytes(pin.begin(), pin.end())}); }
     void onPinDismissed() override { push({"pinoff"}); }
     void onClientTrusted(const uint8_t pk[32]) override { push({"trusted", Bytes(pk, pk + 32)}); }
+    void onAudioFlush() override { push({"flush"}); }
+    void onMetadata(const std::string& t, const std::string& ar, const std::string& al) override {
+        std::string all = t + "|" + ar + "|" + al; push({"meta", Bytes(all.begin(), all.end())});
+    }
+    void onArtwork(const uint8_t* d, size_t l) override { push({"art", Bytes(d, d + l)}); }
+    void onProgress(int64_t p, int64_t d) override { Event e{"progress"}; e.i = p; e.f = (float) d; push(e); }
 };
 
 static std::mt19937 rng(12345);
@@ -388,6 +399,141 @@ static void testPin(const ReceiverInfo& baseInfo, const uint8_t seed[32], const 
     fprintf(stderr, "test PIN completati\n");
 }
 
+// ---------------------------------------------------------------- audio "musica"
+
+static void testNowPlayingParsers() {
+    auto item = [](const char* tag, const std::string& v) { Bytes b(tag, tag + 4); uint32_t n = v.size();
+        for (int i = 3; i >= 0; --i) b.push_back((uint8_t) (n >> (8 * i))); b.insert(b.end(), v.begin(), v.end()); return b; };
+    Bytes inner; for (auto& x : {item("minm", "Titolo è"), item("asar", "Artista"), item("asal", "Album"), item("asgn", "ignorato")}) inner.insert(inner.end(), x.begin(), x.end());
+    Bytes mlit = item("mlit", std::string(inner.begin(), inner.end()));
+    nowplaying::Metadata md;
+    CHECK(nowplaying::parseDmap(mlit.data(), mlit.size(), md) && md.title == "Titolo è" && md.artist == "Artista" && md.album == "Album");
+    Bytes bad = mlit; bad[7] = 0xFF; CHECK(!nowplaying::parseDmap(bad.data(), bad.size(), md));   // lunghezza oltre il buffer
+    // inizio poco prima del giro dei 32 bit: attuale e fine sono "ripartiti" da zero
+    std::string pr = "progress: 4294967000/296/87904\r\n";
+    int64_t pos, dur;
+    CHECK(nowplaying::parseProgress((const uint8_t*) pr.data(), pr.size(), pos, dur));
+    CHECK(pos == 592 * 1000 / 44100 && dur == 88200 * 1000 / 44100);
+    std::string bp = "progress: 10/5/x"; CHECK(!nowplaying::parseProgress((const uint8_t*) bp.data(), bp.size(), pos, dur));
+    for (int it = 0; it < 100000; ++it) { Bytes m = mlit; m[rng() % m.size()] = (uint8_t) rng(); if (rng() % 4 == 0) m.resize(rng() % m.size()); nowplaying::parseDmap(m.data(), m.size(), md); }
+}
+
+// Codifica PCM 16 bit stereo in pacchetti ALAC da 352 campioni (come iOS).
+static std::vector<Bytes> alacEncode(const std::vector<int16_t>& pcm) {
+    ALACEncoder enc; enc.SetFrameSize(352);
+    AudioFormatDescription in{}, out{};
+    in.mSampleRate = 44100; in.mFormatID = kALACFormatLinearPCM; in.mFormatFlags = kALACFormatFlagIsSignedInteger | kALACFormatFlagIsPacked;
+    in.mBytesPerPacket = 4; in.mFramesPerPacket = 1; in.mBytesPerFrame = 4; in.mChannelsPerFrame = 2; in.mBitsPerChannel = 16;
+    out.mSampleRate = 44100; out.mFormatID = kALACFormatAppleLossless; out.mFramesPerPacket = 352; out.mChannelsPerFrame = 2; out.mFormatFlags = 1;   // 16 bit
+    enc.InitializeEncoder(out);
+    std::vector<Bytes> pkts;
+    for (size_t f = 0; f + 352 * 2 <= pcm.size(); f += 352 * 2) {
+        Bytes inb((const uint8_t*) &pcm[f], (const uint8_t*) &pcm[f] + 352 * 4), outb(352 * 4 + 64);
+        int32_t n = (int32_t) inb.size();
+        enc.Encode(in, out, inb.data(), outb.data(), &n);
+        outb.resize(n); pkts.push_back(outb);
+    }
+    return pkts;
+}
+
+static void testMusic(const ReceiverInfo& info, const uint8_t seed[32], const uint8_t serverPk[32]) {
+    (void) serverPk;
+    // 1) PCM di prova: due toni diversi per canale, 100 pacchetti (~0,8 s)
+    std::vector<int16_t> pcm(352 * 2 * 100);
+    for (size_t i = 0; i < pcm.size() / 2; ++i) { pcm[2 * i] = (int16_t) (8000 * std::sin(i * 0.031)); pcm[2 * i + 1] = (int16_t) (6000 * std::sin(i * 0.017)); }
+    auto pkts = alacEncode(pcm);
+    CHECK(pkts.size() == 100);
+
+    auto sink = std::make_shared<TestSink>();
+    AirPlayServer server(sink);
+    const int port = server.start(0, info, seed);
+    FakeIphone ph; ph.fd = connectTcp(port);
+    uint8_t edPk[32], edSk[64]; crypto_sign_keypair(edPk, edSk);
+    CHECK(ph.pair(serverPk)); CHECK(ph.fairplay());
+    Bytes ekey = rnd(72), eiv = rnd(16);
+    CHECK(rtsp(ph.fd, "SETUP", "rtsp://x/1", setupBody(ekey, eiv, 0)).code == 200);
+    uint8_t skey[16]; ph.sessionKey(ekey, skey);
+    // porta di controllo dell'"iPhone": riceve le richieste di ritrasmissione
+    int ctl = socket(AF_INET, SOCK_DGRAM, 0);
+    sockaddr_in ca{}; ca.sin_family = AF_INET; ca.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    bind(ctl, (sockaddr*) &ca, sizeof ca); socklen_t cl = sizeof ca; getsockname(ctl, (sockaddr*) &ca, &cl);
+    Resp r = rtsp(ph.fd, "SETUP", "rtsp://x/1", *plist::toBinary(plist::Dict().set("streams",
+            plist::Array{plist::Dict().set("type", 96).set("ct", 2).set("spf", 352).set("controlPort", (int) ntohs(ca.sin_port))})));
+    CHECK(r.code == 200);
+    Event e; CHECK(sink->waitFor("astart", &e) && e.i == 1);   // ALAC decodificato in C++: a Kotlin arriva PCM
+    auto sp = plist::parseBinary(r.body.data(), r.body.size());
+    auto* sd = sp->asDict()->find("streams")->asArray()->at(0).asDict();
+    const uint16_t dport = (uint16_t) *sd->find("dataPort")->asUInt(), cport = (uint16_t) *sd->find("controlPort")->asUInt();
+    int us = socket(AF_INET, SOCK_DGRAM, 0);
+    auto rtpPacket = [&](uint16_t seq) {
+        Bytes enc = pkts[seq]; size_t full = enc.size() & ~size_t(15);
+        mbedtls_aes_context c; mbedtls_aes_init(&c); mbedtls_aes_setkey_enc(&c, skey, 128);
+        uint8_t iv[16]; memcpy(iv, eiv.data(), 16); if (full) mbedtls_aes_crypt_cbc(&c, MBEDTLS_AES_ENCRYPT, full, iv, enc.data(), enc.data()); mbedtls_aes_free(&c);
+        uint32_t ts = seq * 352u;
+        Bytes p = {0x80, 0x60, (uint8_t) (seq >> 8), (uint8_t) seq, (uint8_t) (ts >> 24), (uint8_t) (ts >> 16), (uint8_t) (ts >> 8), (uint8_t) ts, 0, 0, 0, 1};
+        p.insert(p.end(), enc.begin(), enc.end()); return p;
+    };
+    auto sendTo = [&](uint16_t port, const Bytes& p) { sockaddr_in a{}; a.sin_family = AF_INET; a.sin_port = htons(port); a.sin_addr.s_addr = htonl(INADDR_LOOPBACK); sendto(us, p.data(), p.size(), 0, (sockaddr*) &a, sizeof a); };
+
+    // 2) invio in disordine, il 40 non arriva: deve partire una richiesta di ritrasmissione
+    std::vector<uint16_t> order; for (uint16_t i = 0; i < 100; ++i) if (i != 40) order.push_back(i);
+    std::swap(order[10], order[11]); std::swap(order[60], order[63]);
+    for (uint16_t s : order) { sendTo(dport, rtpPacket(s)); if (s == 45) std::this_thread::sleep_for(std::chrono::milliseconds(30)); }
+    // possono arrivare anche richieste per i pacchetti scambiati (10, 60): si cerca quella del 40
+    bool asked40 = false;
+    for (int k = 0; k < 10 && !asked40; ++k) {
+        pollfd pf{ctl, POLLIN, 0}; uint8_t rq[64];
+        if (poll(&pf, 1, 1000) != 1) break;
+        ssize_t rn = recv(ctl, rq, sizeof rq, 0);
+        CHECK(rn == 8 && rq[1] == 0xD5);
+        asked40 = rn == 8 && ((rq[4] << 8) | rq[5]) == 40;
+    }
+    CHECK(asked40);
+    // ritrasmissione sulla porta di controllo: 4 byte di intestazione + pacchetto originale
+    Bytes re = {0x80, 0xD6, 0, 1}; Bytes orig = rtpPacket(40); re.insert(re.end(), orig.begin(), orig.end());
+    sendTo(cport, re);
+    // 3) il PCM in uscita deve essere identico all'originale (ALAC è senza perdita) e in ordine
+    Bytes got;
+    for (int k = 0; k < 100; ++k) { if (!sink->waitFor("aframe", &e, 2000)) break; got.insert(got.end(), e.a.begin(), e.a.end()); }
+    CHECK(got.size() == pcm.size() * 2);
+    CHECK(got.size() == pcm.size() * 2 && memcmp(got.data(), pcm.data(), got.size()) == 0);
+
+    // 4) FLUSH con RTP-Info: evento di flush
+    CHECK(rtsp(ph.fd, "FLUSH", "rtsp://x/1", {}, "RTP-Info: seq=200;rtptime=0\r\n").code == 200);
+    CHECK(sink->waitFor("flush"));
+    // 5) metadati, copertina (oltre 64 KB) e avanzamento
+    Bytes dm = {'m','l','i','t',0,0,0,12,'m','i','n','m',0,0,0,4,'S','o','n','g'};
+    CHECK(rtsp(ph.fd, "SET_PARAMETER", "rtsp://x/1", dm, "Content-Type: application/x-dmap-tagged\r\n").code == 200);
+    CHECK(sink->waitFor("meta", &e) && std::string(e.a.begin(), e.a.end()) == "Song||");
+    Bytes jpg(300000, 0x55); jpg[0] = 0xFF; jpg[1] = 0xD8; jpg[2] = 0xFF;
+    CHECK(rtsp(ph.fd, "SET_PARAMETER", "rtsp://x/1", jpg, "Content-Type: image/jpeg\r\n").code == 200);
+    CHECK(sink->waitFor("art", &e) && e.a.size() == jpg.size());
+    Bytes fake(1000, 0x41);   // dichiarato JPEG ma non lo è: non va inoltrato
+    CHECK(rtsp(ph.fd, "SET_PARAMETER", "rtsp://x/1", fake, "Content-Type: image/jpeg\r\n").code == 200);
+    std::this_thread::sleep_for(std::chrono::milliseconds(100)); CHECK(!sink->has("art"));
+    std::string pr = "progress: 0/44100/441000\r\n";
+    CHECK(rtsp(ph.fd, "SET_PARAMETER", "rtsp://x/1", Bytes(pr.begin(), pr.end()), "Content-Type: text/parameters\r\n").code == 200);
+    CHECK(sink->waitFor("progress", &e) && e.i == 1000);
+    rtsp(ph.fd, "TEARDOWN", "rtsp://x/1");
+    close(ph.fd); close(us); close(ctl);
+    server.stop();
+
+    // 6) fuzzing del decoder ALAC (stessa configurazione dell'app): nessun crash con dati alterati
+    ALACDecoder dec; uint8_t cookie[24] = {0,0,1,0x60, 0, 16, 40, 10, 14, 2, 0, 255, 0,0,0,0, 0,0,0,0, 0,0,0xAC,0x44};
+    CHECK(dec.Init(cookie, 24) == 0);
+    Bytes outb(4096 * 2 * 4);
+    for (int it = 0; it < 200000; ++it) {
+        Bytes m = pkts[rng() % pkts.size()];
+        for (int k = 0, n = 1 + rng() % 4; k < n; ++k) m[rng() % m.size()] = (uint8_t) rng();
+        if (rng() % 8 == 0) m.resize(1 + rng() % m.size());
+        const size_t real = m.size();
+        m.resize(real + 16 * 1024, 0);   // stesso margine di AlacDecoder nell'app
+        BitBuffer bb; BitBufferInit(&bb, m.data(), (uint32_t) real);
+        uint32_t ns = 0; dec.Decode(&bb, outb.data(), 352, 2, &ns);
+    }
+    fprintf(stderr, "test audio musica completati\n");
+}
+
 static Bytes infoTxt() { std::string e = "deviceid=02:11:22:33:44:55"; Bytes b{(uint8_t) e.size()}; b.insert(b.end(), e.begin(), e.end()); return b; }
 
 int main() {
@@ -405,6 +551,8 @@ int main() {
     // chiave sbagliata -> deve rifiutare
     { auto bad = info; bad.publicKey[0] ^= 1; AirPlayServer s2(sink); CHECK(s2.start(0, bad, seed) < 0); }
     testPin(info, seed, pk);
+    testNowPlayingParsers();
+    testMusic(info, seed, pk);
     const int port = server.start(0, info, seed);
     CHECK(port > 0);
 

@@ -25,11 +25,19 @@ fi
 for f in playfair omg_hax hand_garble modified_md5 sap_hash; do
   clang -c -w -fsanitize=address -g -O1 -I"$P" "$P/$f.c" -o "$OUT/pf_$f.o"
 done
-SRC="$C/srp_server.cpp $C/sps_rewriter.cpp $C/airplay_server.cpp $C/airplay_info.cpp $C/airplay_crypto.cpp $C/media_streams.cpp $C/nal_parser.cpp $C/net_util.cpp $C/plist_reader.cpp $C/plist_writer.cpp"
+for f in ag_dec dp_dec matrix_dec ALACBitUtilities EndianPortable; do
+  clang -c -w -fsanitize=address -g -O1 -I"$C/third_party/alac" "$C/third_party/alac/$f.c" -o "$OUT/alac_$f.o"
+done
+for f in ag_enc dp_enc matrix_enc; do
+  clang -c -w -fsanitize=address -g -O1 -I"$C/third_party/alac" "$HERE/alac_enc/$f.c" -o "$OUT/alacenc_$f.o"
+done
+clang++ -std=c++17 -c -w -fsanitize=address -g -O1 -I"$C/third_party/alac" "$C/third_party/alac/ALACDecoder.cpp" -o "$OUT/alac_ALACDecoder.o"
+clang++ -std=c++17 -c -w -fsanitize=address -g -O1 -I"$C/third_party/alac" "$HERE/alac_enc/ALACEncoder.cpp" -o "$OUT/alacenc_ALACEncoder.o"
+SRC="$C/now_playing.cpp $C/srp_server.cpp $C/sps_rewriter.cpp $C/airplay_server.cpp $C/airplay_info.cpp $C/airplay_crypto.cpp $C/media_streams.cpp $C/nal_parser.cpp $C/net_util.cpp $C/plist_reader.cpp $C/plist_writer.cpp"
 clang++ -std=c++20 -Wall -Wextra -Wformat=2 -Werror -Wno-missing-field-initializers \
   -fsanitize=address,undefined -fno-omit-frame-pointer -g -O1 \
-  -I"$C" -I"$P" -I"$M/include" -I"$SODIUM/include" \
-  "$HERE/server_test.cpp" $SRC "$OUT"/pf_*.o "$OUT/mbed/library/libmbedcrypto.a" "$SODIUM/lib/libsodium.a" \
+  -I"$C" -I"$P" -I"$M/include" -I"$SODIUM/include" -I"$C/third_party/alac" -I"$HERE/alac_enc" \
+  "$HERE/server_test.cpp" $SRC "$OUT"/pf_*.o "$OUT"/alac_*.o "$OUT"/alacenc_*.o "$OUT/mbed/library/libmbedcrypto.a" "$SODIUM/lib/libsodium.a" \
   -o "$OUT/server_test"
 
 cd "$OUT"

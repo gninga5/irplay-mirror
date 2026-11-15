@@ -45,6 +45,7 @@ import com.irplay.tv.databinding.ActivityMainBinding
 import java.net.Inet4Address
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 class MainActivity : AppCompatActivity() {
@@ -73,6 +74,14 @@ class MainActivity : AppCompatActivity() {
         AirPlayService.start(this)
         scope.launch { ReceiverState.status.collect { render(it) } }
         scope.launch { ReceiverState.publishedName.collect { renderName() } }
+        scope.launch { ReceiverState.nowPlaying.collect { renderNowPlaying(it) } }
+        // La posizione del brano arriva da iOS ogni tanto: in mezzo la si fa avanzare qui.
+        scope.launch {
+            while (true) {
+                if (ReceiverState.status.value is ReceiverState.Status.Playing) renderProgress(ReceiverState.nowPlaying.value)
+                delay(500)
+            }
+        }
         scope.launch {
             ReceiverState.pin.collect { pin ->
                 // Il PIN si mostra solo a schermo; nessun log, nessuna copia oltre lo stato.
@@ -122,7 +131,12 @@ class MainActivity : AppCompatActivity() {
 
     private fun render(status: ReceiverState.Status) {
         val mirroring = status is ReceiverState.Status.Mirroring
-        binding.idlePanel.visibility = if (mirroring) View.GONE else View.VISIBLE
+        val playing = status is ReceiverState.Status.Playing
+        binding.idlePanel.visibility = if (mirroring || playing) View.GONE else View.VISIBLE
+        // Solo musica: niente FLAG_KEEP_SCREEN_ON (sotto); la TV può andare in salvaschermo
+        // mentre la musica continua, ed evita di lasciare la copertina fissa su un OLED.
+        binding.nowPlayingPanel.visibility = if (playing) View.VISIBLE else View.GONE
+        if (playing) binding.npSource.text = getString(R.string.np_source, displayName((status as ReceiverState.Status.Playing).clientName))
         if (status is ReceiverState.Status.Connected || mirroring) {
             window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         } else {
@@ -137,6 +151,7 @@ class MainActivity : AppCompatActivity() {
             ReceiverState.Status.Ready -> getString(R.string.status_ready)
             is ReceiverState.Status.Connected -> getString(R.string.status_connected, displayName(status.clientName))
             is ReceiverState.Status.Mirroring -> getString(R.string.status_mirroring, displayName(status.clientName))
+            is ReceiverState.Status.Playing -> getString(R.string.status_playing, displayName(status.clientName))
             ReceiverState.Status.Failed -> getString(R.string.status_failed)
         }
         val (short, color) = when (status) {
@@ -144,6 +159,7 @@ class MainActivity : AppCompatActivity() {
             ReceiverState.Status.Ready -> R.string.status_short_ready to R.color.status_ready
             is ReceiverState.Status.Connected -> R.string.status_short_connected to R.color.status_active
             is ReceiverState.Status.Mirroring -> R.string.status_short_mirroring to R.color.status_active
+            is ReceiverState.Status.Playing -> R.string.status_short_playing to R.color.status_active
             ReceiverState.Status.Failed -> R.string.status_short_failed to R.color.status_error
         }
         binding.statusShort.setText(short)
@@ -213,6 +229,34 @@ class MainActivity : AppCompatActivity() {
         if (ReceiverState.isInSession) Toast.makeText(this, R.string.rename_deferred, Toast.LENGTH_LONG).show()
         AirPlayService.reload(this)
         return true
+    }
+
+    private fun renderNowPlaying(np: ReceiverState.NowPlaying) {
+        binding.npTitle.text = np.title.ifBlank { getString(R.string.np_unknown_title) }
+        binding.npArtist.text = np.artist
+        binding.npAlbum.text = np.album
+        binding.npArtwork.setImageBitmap(np.artwork)
+        binding.npPlaceholder.visibility = if (np.artwork == null) View.VISIBLE else View.GONE
+        renderProgress(np)
+    }
+
+    private fun renderProgress(np: ReceiverState.NowPlaying) {
+        if (np.durationMs <= 0) {
+            binding.npProgress.visibility = View.INVISIBLE
+            binding.npPosition.text = ""
+            binding.npDuration.text = ""
+            return
+        }
+        val pos = (np.positionMs + (ReceiverState.elapsedNow() - np.progressAtElapsed)).coerceIn(0, np.durationMs)
+        binding.npProgress.visibility = View.VISIBLE
+        binding.npProgress.progress = (pos * 1000 / np.durationMs).toInt()
+        binding.npPosition.text = formatTime(pos)
+        binding.npDuration.text = formatTime(np.durationMs)
+    }
+
+    private fun formatTime(ms: Long): String {
+        val s = ms / 1000
+        return if (s >= 3600) "%d:%02d:%02d".format(s / 3600, (s / 60) % 60, s % 60) else "%d:%02d".format(s / 60, s % 60)
     }
 
     private fun renderPin() {

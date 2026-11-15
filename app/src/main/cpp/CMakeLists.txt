@@ -43,6 +43,17 @@ add_library(playfair STATIC
 target_include_directories(playfair PUBLIC ${THIRD_PARTY}/playfair)
 target_compile_options(playfair PRIVATE -w)   # codice upstream: i warning vanno visti solo sul nostro codice
 
+# --- ALAC: decoder Apple Lossless ufficiale (Apache-2.0), per l'audio "solo musica" ----------
+add_library(alac STATIC
+        ${THIRD_PARTY}/alac/ALACDecoder.cpp
+        ${THIRD_PARTY}/alac/ALACBitUtilities.c
+        ${THIRD_PARTY}/alac/EndianPortable.c
+        ${THIRD_PARTY}/alac/ag_dec.c
+        ${THIRD_PARTY}/alac/dp_dec.c
+        ${THIRD_PARTY}/alac/matrix_dec.c)
+target_include_directories(alac PUBLIC ${THIRD_PARTY}/alac)
+target_compile_options(alac PRIVATE -w)
+
 # --- Libreria iRPlay ---------------------------------------------------------------
 add_library(${CMAKE_PROJECT_NAME} SHARED
         jni_bridge.cpp
@@ -55,7 +66,8 @@ add_library(${CMAKE_PROJECT_NAME} SHARED
         plist_reader.cpp
         plist_writer.cpp
         sps_rewriter.cpp
-        srp_server.cpp)
+        srp_server.cpp
+        now_playing.cpp)
 
 # Hardening: questo codice legge pacchetti da una rete non fidata (la LAN).
 target_compile_options(${CMAKE_PROJECT_NAME} PRIVATE
@@ -70,5 +82,6 @@ target_link_libraries(${CMAKE_PROJECT_NAME}
         sodium::sodium-static
         mbedcrypto
         playfair
+        alac
         ${log-lib}
         android)

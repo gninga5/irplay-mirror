@@ -25,6 +25,8 @@
 #include "nal_parser.h"
 #include "net_util.h"
 #include "sps_rewriter.h"
+#include "third_party/alac/ALACBitUtilities.h"
+#include "third_party/alac/ALACDecoder.h"
 
 #ifdef __ANDROID__
 #include <sys/resource.h>
@@ -229,15 +231,83 @@ namespace irplay {
         connFd_ = -1;
     }
 
+    // =============================================================== ALAC
+
+    /*
+     * Decoder Apple Lossless (sorgente ufficiale Apple, Apache-2.0, in third_party/alac).
+     * AirPlay usa sempre la stessa configurazione, che iOS non invia nel SETUP (era nel
+     * campo "fmtp" dell'ANNOUNCE di AirPlay 1): 352 campioni per pacchetto, 16 bit, stereo,
+     * 44,1 kHz -> "96 352 0 16 40 10 14 2 255 0 0 44100".
+     * Il pacchetto arriva dalla rete. Il decoder Apple ha due punti deboli (vedi
+     * third_party/alac/PATCHES.md): non controllava il numero di campioni dichiarato dal pacchetto
+     * (corretto nel sorgente) e il suo lettore di bit non controlla la fine del buffer. Per il
+     * secondo si decodifica da una copia con kPadding byte di zeri in coda, più del massimo che
+     * può leggere con al più kFrame campioni, verso un buffer di uscita molto più grande del
+     * necessario; si accettano solo esiti con al massimo kFrame campioni.
+     */
+    class AlacDecoder {
+    public:
+        static constexpr uint32_t kFrame = 352;
+        static constexpr uint32_t kChannels = 2;
+        static constexpr size_t kPadding = 16 * 1024;
+
+        bool init() {
+            uint8_t cookie[24] = {
+                    0x00, 0x00, 0x01, 0x60,   // frameLength 352
+                    0x00,                     // compatibleVersion
+                    0x10,                     // bitDepth 16
+                    0x28, 0x0A, 0x0E,         // pb 40, mb 10, kb 14
+                    0x02,                     // numChannels
+                    0x00, 0xFF,               // maxRun 255
+                    0x00, 0x00, 0x00, 0x00,   // maxFrameBytes
+                    0x00, 0x00, 0x00, 0x00,   // avgBitRate
+                    0x00, 0x00, 0xAC, 0x44,   // sampleRate 44100
+            };
+            return dec_.Init(cookie, sizeof cookie) == 0;
+        }
+
+        // Restituisce false se il pacchetto non è decodificabile; out = PCM 16 bit little-endian interleaved.
+        bool decode(const uint8_t* in, size_t len, std::vector<uint8_t>& out) {
+            if (len == 0 || len > 8192) return false;
+            in_.assign(in, in + len);
+            in_.resize(len + kPadding, 0);
+            scratch_.assign(4096 * kChannels * 4, 0);
+            BitBuffer bits;
+            BitBufferInit(&bits, in_.data(), static_cast<uint32_t>(len));
+            uint32_t samples = 0;
+            if (dec_.Decode(&bits, scratch_.data(), kFrame, kChannels, &samples) != 0) return false;
+            if (samples == 0 || samples > kFrame) return false;
+            out.assign(scratch_.begin(), scratch_.begin() + samples * kChannels * 2);
+            return true;
+        }
+
+    private:
+        ALACDecoder dec_;
+        std::vector<uint8_t> in_, scratch_;
+    };
+
     // =============================================================== AudioStream
 
+    namespace {
+        constexpr int64_t kGapWaitMs = 150;    // attesa di un pacchetto mancante prima di saltarlo
+        constexpr uint16_t kMaxResend = 64;
+    }
+
     AudioStream::AudioStream(SessionSink& sink, const sockaddr_in6& peer, const uint8_t sessionKey[16],
-                             const uint8_t iv[16], int codecType, std::atomic<int64_t>& activity)
-            : sink_(sink), peer_(peer), decryptor_(sessionKey, iv), codecType_(codecType), activity_(activity) {}
+                             const uint8_t iv[16], int codecType, uint16_t remoteControlPort,
+                             std::atomic<int64_t>& activity)
+            : sink_(sink), peer_(peer), remoteControl_(peer), decryptor_(sessionKey, iv), codecType_(codecType),
+              music_(codecType != kCodecAacEld), activity_(activity) {
+        remoteControl_.sin6_port = htons(remoteControlPort);
+    }
 
     AudioStream::~AudioStream() { stop(); }
 
     bool AudioStream::start(uint16_t& dataPort, uint16_t& controlPort) {
+        if (codecType_ == kCodecAlac) {
+            alac_ = std::make_unique<AlacDecoder>();
+            if (!alac_->init()) { LOGE("Decoder ALAC non inizializzato"); return false; }
+        }
         dataPort = 0;
         controlPort = 0;
         dataFd_ = net::udpBind(dataPort, "audio");
@@ -249,7 +319,9 @@ namespace irplay {
             return false;
         }
         running_ = true;
-        sink_.onAudioStarted(codecType_);
+        // ALAC e PCM vengono decodificati qui: a Kotlin arriva PCM 16 bit (codice kCodecPcm).
+        const bool pcmOut = codecType_ == kCodecAlac || codecType_ == kCodecPcm;
+        sink_.onAudioStarted(pcmOut ? kCodecPcm : codecType_);
         thread_ = std::thread(&AudioStream::run, this);
         return true;
     }
@@ -263,39 +335,143 @@ namespace irplay {
         sink_.onAudioStopped();
     }
 
-    void AudioStream::onData(uint8_t* buf, size_t len) {
+    void AudioStream::requestFlush(int nextSeq) { flushSeq_ = nextSeq < 0 ? -1 : (nextSeq & 0xFFFF); }
+
+    void AudioStream::deliver(const uint8_t* payload, size_t len) {
+        if (codecType_ == kCodecAlac) {
+            if (alac_->decode(payload, len, pcm_)) sink_.onAudioFrame(pcm_.data(), pcm_.size());
+        } else if (codecType_ == kCodecPcm) {
+            // L16 di RTP è big-endian; AudioTrack vuole little-endian.
+            pcm_.assign(payload, payload + (len & ~size_t{1}));
+            for (size_t i = 0; i + 1 < pcm_.size(); i += 2) std::swap(pcm_[i], pcm_[i + 1]);
+            sink_.onAudioFrame(pcm_.data(), pcm_.size());
+        } else {
+            sink_.onAudioFrame(payload, len);   // AAC: lo decodifica MediaCodec in Kotlin
+        }
+    }
+
+    void AudioStream::resetBuffer() {
+        for (auto& s : slots_) { s.used = false; s.data.clear(); }
+        buffered_ = 0;
+        gapSinceMs_ = 0;
+    }
+
+    void AudioStream::requestResend(uint16_t first, uint16_t count) {
+        if (remoteControl_.sin6_port == 0 || count == 0) return;
+        // Richiesta di ritrasmissione AirPlay: 0x80 0xD5, contatore, primo mancante, quanti.
+        const uint16_t c = resendCounter_++;
+        const uint8_t req[8] = {0x80, 0xD5, static_cast<uint8_t>(c >> 8), static_cast<uint8_t>(c),
+                                static_cast<uint8_t>(first >> 8), static_cast<uint8_t>(first),
+                                static_cast<uint8_t>(count >> 8), static_cast<uint8_t>(count)};
+        ::sendto(controlFd_, req, sizeof req, net::kSendFlags,
+                 reinterpret_cast<const sockaddr*>(&remoteControl_), sizeof remoteControl_);
+    }
+
+    void AudioStream::insert(uint16_t seq, const uint8_t* payload, size_t len) {
+        if (!haveSeq_) { haveSeq_ = true; expected_ = seq; }
+        const auto delta = static_cast<int16_t>(seq - expected_);
+        if (delta < 0) {
+            if (delta > -1000) return;          // duplicato o arrivato dopo essere stato saltato
+            resetBuffer();                      // salto all'indietro grande: il flusso è ripartito
+            expected_ = seq;
+        } else if (delta >= static_cast<int>(kSlots)) {
+            resetBuffer();                      // troppo avanti: si riparte da qui
+            expected_ = seq;
+        }
+        Slot& slot = slots_[seq % kSlots];
+        if (slot.used) return;                  // stesso pacchetto ricevuto due volte
+        slot.used = true;
+        slot.seq = seq;
+        slot.data.assign(payload, payload + len);
+        ++buffered_;
+    }
+
+    void AudioStream::drain(int64_t now) {
+        for (;;) {
+            Slot& slot = slots_[expected_ % kSlots];
+            if (slot.used && slot.seq == expected_) {
+                deliver(slot.data.data(), slot.data.size());
+                slot.used = false;
+                slot.data.clear();
+                --buffered_;
+                ++expected_;
+                gapSinceMs_ = 0;
+                continue;
+            }
+            if (buffered_ == 0) return;
+            // Manca il pacchetto atteso ma ne sono arrivati di successivi.
+            uint16_t next = expected_;
+            for (size_t i = 1; i < kSlots; ++i) {
+                const auto s = static_cast<uint16_t>(expected_ + i);
+                if (slots_[s % kSlots].used && slots_[s % kSlots].seq == s) { next = s; break; }
+            }
+            if (next == expected_) { resetBuffer(); return; }   // stato incoerente: si svuota
+            if (gapSinceMs_ == 0) {
+                gapSinceMs_ = now;
+                const auto missing = static_cast<uint16_t>(next - expected_);
+                requestResend(expected_, missing < kMaxResend ? missing : kMaxResend);
+                return;
+            }
+            if (now - gapSinceMs_ < kGapWaitMs) return;
+            expected_ = next;                   // non è arrivato in tempo: si salta (un breve silenzio)
+            gapSinceMs_ = 0;
+        }
+    }
+
+    void AudioStream::onRtp(uint8_t* buf, size_t len) {
         if (len <= 12 || (buf[0] & 0xC0) != 0x80 || (buf[1] & 0x7F) != 0x60) return;
         const uint16_t seq = be16(buf + 2);
+        activity_ = monotonicMs();
+        uint8_t* payload = buf + 12;
+        const size_t n = len - 12;
+        decryptor_.decrypt(payload, n);
+
+        if (music_) {
+            insert(seq, payload, n);
+            drain(monotonicMs());
+            return;
+        }
+        // Duplicazione schermo: AAC-ELD a bassa latenza, nessun riordino. Pacchetti duplicati o
+        // in ritardo producono solo un click: si scartano. Un salto all'indietro grande è un riavvio.
         if (haveSeq_) {
-            // Pacchetti duplicati o arrivati in ritardo: AAC-ELD è a bassa latenza e un frame
-            // fuori ordine produce solo un click. Un salto all'indietro grande è un riavvio del flusso.
             const auto delta = static_cast<int16_t>(seq - lastSeq_);
             if (delta <= 0 && delta > -1000) return;
         }
         haveSeq_ = true;
         lastSeq_ = seq;
-        activity_ = monotonicMs();
-
-        uint8_t* payload = buf + 12;
-        const size_t n = len - 12;
-        decryptor_.decrypt(payload, n);
-        sink_.onAudioFrame(payload, n);
+        deliver(payload, n);
     }
 
     void AudioStream::run() {
         uint8_t buf[2048];
         while (running_) {
-            pollfd p[2] = {{dataFd_, POLLIN, 0}, {controlFd_, POLLIN, 0}};
-            if (::poll(p, 2, 250) <= 0) continue;
-            for (int i = 0; i < 2; ++i) {
-                if (!(p[i].revents & POLLIN)) continue;
-                sockaddr_storage from{};
-                socklen_t fl = sizeof from;
-                const ssize_t n = ::recvfrom(p[i].fd, buf, sizeof buf, 0, reinterpret_cast<sockaddr*>(&from), &fl);
-                if (n <= 0 || !net::sameHost(peer_, from)) continue;
-                // Porta di controllo: sincronizzazione e ritrasmissioni, non usate (riproduzione immediata).
-                if (i == 0) onData(buf, static_cast<size_t>(n));
+            const int pending = flushSeq_.exchange(-2);
+            if (pending != -2) {
+                resetBuffer();
+                if (pending >= 0) { expected_ = static_cast<uint16_t>(pending); haveSeq_ = true; }
+                else haveSeq_ = false;
+                sink_.onAudioFlush();
             }
+            pollfd p[2] = {{dataFd_, POLLIN, 0}, {controlFd_, POLLIN, 0}};
+            // Con pacchetti in attesa si controlla più spesso, per saltare in tempo quelli persi.
+            const int timeout = buffered_ > 0 ? 20 : 250;
+            if (::poll(p, 2, timeout) > 0) {
+                for (int i = 0; i < 2; ++i) {
+                    if (!(p[i].revents & POLLIN)) continue;
+                    sockaddr_storage from{};
+                    socklen_t fl = sizeof from;
+                    const ssize_t n = ::recvfrom(p[i].fd, buf, sizeof buf, 0, reinterpret_cast<sockaddr*>(&from), &fl);
+                    if (n <= 0 || !net::sameHost(peer_, from)) continue;
+                    if (i == 0) {
+                        onRtp(buf, static_cast<size_t>(n));
+                    } else if (n > 4 + 12 && (buf[1] & 0x7F) == 0x56 && music_) {
+                        // Ritrasmissione: 4 byte di intestazione e poi il pacchetto RTP originale.
+                        onRtp(buf + 4, static_cast<size_t>(n) - 4);
+                    }
+                    // 0x54 (sincronizzazione): non serve, l'audio è riprodotto appena pronto.
+                }
+            }
+            if (music_ && buffered_ > 0) drain(monotonicMs());
         }
     }
 
@@ -376,9 +552,9 @@ namespace irplay {
         return port;
     }
 
-    bool Session::startAudio(int codecType, uint16_t& dataPort, uint16_t& controlPort) {
+    bool Session::startAudio(int codecType, uint16_t remoteControlPort, uint16_t& dataPort, uint16_t& controlPort) {
         stopAudio();
-        audio_ = std::make_unique<AudioStream>(sink_, peer_, key_, iv_, codecType, activity_);
+        audio_ = std::make_unique<AudioStream>(sink_, peer_, key_, iv_, codecType, remoteControlPort, activity_);
         if (!audio_->start(dataPort, controlPort)) {
             audio_.reset();
             return false;
@@ -391,6 +567,10 @@ namespace irplay {
             mirror_->stop();
             mirror_.reset();
         }
+    }
+
+    void Session::flushAudio(int nextSeq) {
+        if (audio_) audio_->requestFlush(nextSeq);
     }
 
     void Session::stopAudio() {

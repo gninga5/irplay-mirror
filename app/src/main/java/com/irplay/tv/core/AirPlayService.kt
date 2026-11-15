@@ -29,6 +29,8 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.media.MediaCodecList
 import android.media.MediaFormat
 import android.net.nsd.NsdManager
@@ -93,7 +95,9 @@ class AirPlayService : Service() {
                     return@launch
                 }
 
-                audio = AudioRenderer(applicationContext).also { NativeBridge.audioSink = it }
+                audio = AudioRenderer(applicationContext)
+                NativeBridge.audioSink = audioSink
+                NativeBridge.nowPlayingListener = nowPlayingListener
                 NativeBridge.sessionListener = sessionListener
                 NativeBridge.pinListener = pinListener
                 this@AirPlayService.identity = identity
@@ -154,7 +158,9 @@ class AirPlayService : Service() {
         registrations.clear()
         NativeBridge.sessionListener = null
         NativeBridge.pinListener = null
+        NativeBridge.nowPlayingListener = null
         ReceiverState.setPin(null)
+        ReceiverState.clearNowPlaying()
         NativeBridge.stopServer()     // prima si ritira l'annuncio, poi si chiudono le connessioni
         NativeBridge.audioSink = null
         audio?.release()
@@ -224,10 +230,88 @@ class AirPlayService : Service() {
         override fun onSessionEnded(reason: Int) {
             Log.i(TAG, "Sessione terminata, motivo $reason")
             clientName = ""
+            ReceiverState.clearNowPlaying()
             ReceiverState.set(ReceiverState.Status.Ready)
             updateNotification(getString(R.string.receiver_waiting))
             if (renamePending) scope.launch { republish() }
         }
+    }
+
+    /**
+     * Audio: inoltra all'AudioRenderer e aggiorna lo stato. Se arriva audio "musica" (non AAC-ELD)
+     * senza video, la TV sta facendo da altoparlante: si mostra la schermata "In riproduzione".
+     */
+    private val audioSink = object : NativeBridge.AudioSink {
+        override fun onAudioStarted(codecType: Int) {
+            audio?.onAudioStarted(codecType)
+            val status = ReceiverState.status.value
+            if (codecType != CT_AAC_ELD && status is ReceiverState.Status.Connected) {
+                ReceiverState.set(ReceiverState.Status.Playing(status.clientName))
+                updateNotification(getString(R.string.receiver_playing))
+                bringActivityToFront()
+            }
+        }
+
+        override fun onAudioStopped() {
+            audio?.onAudioStopped()
+            val status = ReceiverState.status.value
+            if (status is ReceiverState.Status.Playing) {
+                ReceiverState.set(ReceiverState.Status.Connected(status.clientName))
+                ReceiverState.clearNowPlaying()
+            }
+        }
+
+        override fun onAudioFrame(data: ByteArray) { audio?.onAudioFrame(data) }
+        override fun onVolume(db: Float) { audio?.onVolume(db) }
+        override fun onAudioFlush() { audio?.onAudioFlush() }
+    }
+
+    /** Titolo, copertina e avanzamento del brano (thread nativi). */
+    private val nowPlayingListener = object : NativeBridge.NowPlayingListener {
+        override fun onMetadata(title: String, artist: String, album: String) {
+            ReceiverState.updateNowPlaying {
+                it.copy(title = cleanText(title), artist = cleanText(artist), album = cleanText(album))
+            }
+        }
+
+        override fun onArtwork(image: ByteArray) {
+            val bitmap = if (image.isEmpty()) null else decodeArtwork(image)
+            ReceiverState.updateNowPlaying { it.copy(artwork = bitmap) }
+        }
+
+        override fun onProgress(positionMs: Long, durationMs: Long) {
+            ReceiverState.updateNowPlaying {
+                it.copy(positionMs = positionMs, durationMs = durationMs, progressAtElapsed = ReceiverState.elapsedNow())
+            }
+        }
+    }
+
+    /** Testo da mostrare a schermo: niente caratteri di controllo o invisibili, al massimo 200 caratteri. */
+    private fun cleanText(s: String): String =
+        s.filter { !Character.isISOControl(it) && Character.getType(it) != Character.FORMAT.toInt() }.take(200).trim()
+
+    /**
+     * La copertina arriva dalla rete: prima si leggono solo le dimensioni, poi si decodifica
+     * ridotta a circa 600 px. Così un'immagine enorme (o costruita per esserlo una volta
+     * decompressa) non può occupare centinaia di MB su una TV con 1-2 GB di RAM.
+     */
+    private fun decodeArtwork(data: ByteArray): Bitmap? = try {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(data, 0, data.size, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0 || bounds.outWidth > 8192 || bounds.outHeight > 8192) {
+            null
+        } else {
+            var sample = 1
+            while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= ARTWORK_MAX_PX) sample *= 2
+            BitmapFactory.decodeByteArray(data, 0, data.size, BitmapFactory.Options().apply {
+                inSampleSize = sample
+                inPreferredConfig = Bitmap.Config.RGB_565
+            })
+        }
+    } catch (e: Exception) {
+        null
+    } catch (e: OutOfMemoryError) {
+        null
     }
 
     /**
@@ -471,5 +555,7 @@ class AirPlayService : Service() {
 
         private const val ACTION_RELOAD = "com.irplay.tv.action.RELOAD"
         private const val PIN_SCREEN_TIMEOUT_MS = 125_000L   // poco oltre la validità nativa (120 s)
+        private const val CT_AAC_ELD = 8
+        private const val ARTWORK_MAX_PX = 600
     }
 }

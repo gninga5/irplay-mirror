@@ -266,7 +266,7 @@
                 android:id="@+id/auto_open_row"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
-                android:layout_weight="1"
+                android:layout_weight="1.25"
                 android:background="@drawable/bg_focusable"
                 android:clickable="true"
                 android:focusable="true"
@@ -314,8 +314,8 @@
                 android:id="@+id/pin_row"
                 android:layout_width="0dp"
                 android:layout_height="match_parent"
-                android:layout_marginStart="20dp"
-                android:layout_weight="0.8"
+                android:layout_marginStart="16dp"
+                android:layout_weight="1"
                 android:background="@drawable/bg_focusable"
                 android:clickable="true"
                 android:focusable="true"
@@ -340,12 +340,42 @@
                     android:textSize="13sp" />
             </LinearLayout>
 
+            <LinearLayout
+                android:id="@+id/lyrics_row"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_marginStart="16dp"
+                android:layout_weight="1"
+                android:background="@drawable/bg_focusable"
+                android:clickable="true"
+                android:focusable="true"
+                android:gravity="center_vertical"
+                android:orientation="vertical"
+                android:paddingHorizontal="20dp"
+                android:paddingVertical="12dp">
+
+                <TextView
+                    style="@style/iRPlay.Heading"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/lyrics_title"
+                    android:textSize="16sp" />
+
+                <TextView
+                    android:id="@+id/lyrics_summary"
+                    style="@style/iRPlay.Secondary"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:textSize="13sp" />
+            </LinearLayout>
+
             <TextView
                 android:id="@+id/licenses_button"
                 style="@style/iRPlay.Heading"
                 android:layout_width="wrap_content"
                 android:layout_height="match_parent"
-                android:layout_marginStart="20dp"
+                android:layout_marginStart="16dp"
                 android:background="@drawable/bg_focusable"
                 android:clickable="true"
                 android:focusable="true"
@@ -397,6 +427,7 @@
             android:orientation="vertical">
 
             <TextView
+                android:id="@+id/np_label"
                 style="@style/iRPlay.Label"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
@@ -430,6 +461,37 @@
                 android:ellipsize="end"
                 android:maxLines="1"
                 android:textSize="16sp" />
+
+            <!-- Testo del brano (facoltativo): 5 righe, quella in corso al centro. -->
+            <LinearLayout
+                android:id="@+id/np_lyrics"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="20dp"
+                android:orientation="vertical"
+                android:visibility="gone">
+
+                <TextView
+                    android:id="@+id/np_l0"
+                    style="@style/iRPlay.LyricLine" />
+
+                <TextView
+                    android:id="@+id/np_l1"
+                    style="@style/iRPlay.LyricLine" />
+
+                <TextView
+                    android:id="@+id/np_l2"
+                    style="@style/iRPlay.LyricLine.Current"
+                    android:layout_marginVertical="4dp" />
+
+                <TextView
+                    android:id="@+id/np_l3"
+                    style="@style/iRPlay.LyricLine" />
+
+                <TextView
+                    android:id="@+id/np_l4"
+                    style="@style/iRPlay.LyricLine" />
+            </LinearLayout>
 
             <ProgressBar
                 android:id="@+id/np_progress"

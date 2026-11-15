@@ -50,6 +50,22 @@
         <item name="android:fontFamily">sans-serif-medium</item>
     </style>
 
+    <style name="iRPlay.LyricLine" parent="">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:textColor">@color/text_muted</item>
+        <item name="android:textSize">17sp</item>
+        <item name="android:maxLines">1</item>
+        <item name="android:ellipsize">end</item>
+    </style>
+
+    <style name="iRPlay.LyricLine.Current">
+        <item name="android:textColor">@color/accent</item>
+        <item name="android:textSize">22sp</item>
+        <item name="android:fontFamily">sans-serif-medium</item>
+        <item name="android:maxLines">2</item>
+    </style>
+
     <style name="iRPlay.StepNumber" parent="">
         <item name="android:layout_width">28dp</item>
         <item name="android:layout_height">28dp</item>

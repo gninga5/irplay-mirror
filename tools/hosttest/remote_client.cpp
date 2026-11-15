@@ -19,6 +19,8 @@
 
 #include "plist_reader.h"
 #include "plist_writer.h"
+#include "ALACEncoder.h"
+#include <cmath>
 extern "C" {
 #include "playfair.h"
 }
@@ -73,8 +75,9 @@ int main(int argc, char** argv) {
     const int seconds = argc > 1 ? atoi(argv[1]) : 8;
     if (sodium_init() < 0) return 1;
     const bool audioMode = argc > 2 && std::string(argv[2]) == "audio";
+    const bool musicMode = argc > 2 && std::string(argv[2]) == "music";   // ALAC + metadati, come Apple Music
     const char* envPort = getenv("ICAST_PORT");
-    int fd = connectTcp(envPort ? (uint16_t) atoi(envPort) : (audioMode ? 7100 : 7000));
+    int fd = connectTcp(envPort ? (uint16_t) atoi(envPort) : ((audioMode || musicMode) ? 7100 : 7000));
     if (fd < 0) { fprintf(stderr, "connessione a 7000 fallita\n"); return 1; }
 
     Resp r = rtsp(fd, "GET", "/info");
@@ -117,6 +120,72 @@ int main(int argc, char** argv) {
     rtsp(fd, "RECORD", "rtsp://127.0.0.1/1");
     uint8_t fp[16], skey[16]; { Bytes mm = msg164, e = ekey; playfair_decrypt(mm.data(), e.data(), fp); }
     sha512_16(Bytes(fp, fp + 16), shared, 32, skey);
+
+    if (musicMode) {
+        // tono di prova codificato in ALAC (352 campioni per pacchetto, come iOS)
+        ALACEncoder enc; enc.SetFrameSize(352);
+        AudioFormatDescription in{}, out{};
+        in.mSampleRate = 44100; in.mFormatID = kALACFormatLinearPCM; in.mFormatFlags = kALACFormatFlagIsSignedInteger | kALACFormatFlagIsPacked;
+        in.mBytesPerPacket = 4; in.mFramesPerPacket = 1; in.mBytesPerFrame = 4; in.mChannelsPerFrame = 2; in.mBitsPerChannel = 16;
+        out.mSampleRate = 44100; out.mFormatID = kALACFormatAppleLossless; out.mFramesPerPacket = 352; out.mChannelsPerFrame = 2; out.mFormatFlags = 1;
+        enc.InitializeEncoder(out);
+        plist::Dict as; as.set("streams", plist::Array{plist::Dict().set("type", 96).set("ct", 2).set("spf", 352).set("controlPort", 6001)});
+        r = rtsp(fd, "SETUP", "rtsp://127.0.0.1/1", *plist::toBinary(as));
+        auto ar = plist::parseBinary(r.body.data(), r.body.size());
+        if (r.code != 200 || !ar) { fprintf(stderr, "SETUP audio fallito\n"); return 1; }
+        const unsigned aport = (unsigned) *ar->asDict()->find("streams")->asArray()->at(0).asDict()->find("dataPort")->asUInt();
+        system((std::string(getenv("ADB")) + " emu redir add udp:" + std::to_string(aport) + ":" + std::to_string(aport) + " >/dev/null").c_str());
+        auto item = [](const char* tag, const std::string& v) { Bytes b(tag, tag + 4); uint32_t n = v.size();
+            for (int i = 3; i >= 0; --i) b.push_back((uint8_t) (n >> (8 * i))); b.insert(b.end(), v.begin(), v.end()); return b; };
+        Bytes inner; for (auto& x : {item("minm", "Bohemian Rhapsody"), item("asar", "Queen"), item("asal", "A Night at the Opera")}) inner.insert(inner.end(), x.begin(), x.end());
+        Bytes dmap = item("mlit", std::string(inner.begin(), inner.end()));
+        auto setp = [&](const Bytes& body, const char* ct) { return rtsp(fd, "SET_PARAMETER", "rtsp://x/1", body, (std::string("Content-Type: ") + ct + "\r\n").c_str()).code; };
+        // rtsp() non accetta header extra in questo client: li aggiungiamo nel corpo della richiesta
+        (void) setp;
+        auto rawSet = [&](const Bytes& body, const std::string& ctype) {
+            static int cs = 900;
+            std::string req = "SET_PARAMETER rtsp://x/1 RTSP/1.0\r\nCSeq: " + std::to_string(cs++) + "\r\nContent-Type: " + ctype +
+                              "\r\nContent-Length: " + std::to_string(body.size()) + "\r\n\r\n";
+            Bytes o(req.begin(), req.end()); o.insert(o.end(), body.begin(), body.end());
+            send(fd, o.data(), o.size(), 0);
+            std::string buf; char c; while (buf.find("\r\n\r\n") == std::string::npos && recv(fd, &c, 1, 0) == 1) buf += c;
+        };
+        rawSet(dmap, "application/x-dmap-tagged");
+        // posizione 60 s su 355 s (la durata vera del brano, per la ricerca del testo)
+        const uint32_t start = 1000000; std::string prog = "progress: " + std::to_string(start) + "/" + std::to_string(start + 60 * 44100) + "/" + std::to_string(start + 355 * 44100) + "\r\n";
+        rawSet(Bytes(prog.begin(), prog.end()), "text/parameters");
+        int us = socket(AF_INET, SOCK_DGRAM, 0);
+        sockaddr_in aa{}; aa.sin_family = AF_INET; aa.sin_port = htons(aport); aa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        mbedtls_aes_context c2; mbedtls_aes_init(&c2); mbedtls_aes_setkey_enc(&c2, skey, 128);
+        auto t0 = std::chrono::steady_clock::now();
+        const int total = seconds * 44100 / 352;
+        std::vector<int16_t> pcm(352 * 2);
+        for (int seq = 0; seq < total; ++seq) {
+            for (int i = 0; i < 352; ++i) { int16_t v = (int16_t) (3000 * std::sin((seq * 352 + i) * 0.06)); pcm[2 * i] = v; pcm[2 * i + 1] = v; }
+            Bytes ob(352 * 4 + 64); int32_t n = 352 * 4;
+            enc.Encode(in, out, (unsigned char*) pcm.data(), ob.data(), &n); ob.resize(n);
+            size_t full = ob.size() & ~size_t(15); uint8_t ivc[16]; memcpy(ivc, eiv.data(), 16);
+            if (full) mbedtls_aes_crypt_cbc(&c2, MBEDTLS_AES_ENCRYPT, full, ivc, ob.data(), ob.data());
+            uint32_t ts = seq * 352u;
+            Bytes pkt = {0x80, 0x60, (uint8_t) (seq >> 8), (uint8_t) seq, (uint8_t) (ts >> 24), (uint8_t) (ts >> 16), (uint8_t) (ts >> 8), (uint8_t) ts, 0, 0, 0, 1};
+            pkt.insert(pkt.end(), ob.begin(), ob.end());
+            sendto(us, pkt.data(), pkt.size(), 0, (sockaddr*) &aa, sizeof aa);
+            if (seq % 250 == 0) rtsp(fd, "POST", "/feedback");
+            std::this_thread::sleep_until(t0 + std::chrono::microseconds((int64_t) (seq + 1) * 352 * 1000000 / 44100));
+        }
+        printf("inviati %d pacchetti ALAC\n", total);
+        // pausa come fa iOS: FLUSH, poi TEARDOWN del solo flusso audio; la connessione resta
+        std::string fl = "FLUSH rtsp://x/1 RTSP/1.0\r\nCSeq: 990\r\nRTP-Info: seq=" + std::to_string(total) + ";rtptime=0\r\n\r\n";
+        send(fd, fl.data(), fl.size(), 0);
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+        plist::Dict td; td.set("streams", plist::Array{plist::Dict().set("type", 96)});
+        rtsp(fd, "TEARDOWN", "rtsp://127.0.0.1/1", *plist::toBinary(td));
+        printf("in pausa (flusso audio chiuso, sessione aperta)\n");
+        std::this_thread::sleep_for(std::chrono::seconds(8));
+        r = rtsp(fd, "TEARDOWN", "rtsp://127.0.0.1/1");
+        printf("TEARDOWN -> %d\n", r.code);
+        return 0;
+    }
 
     if (audioMode) {
         plist::Dict as; as.set("streams", plist::Array{plist::Dict().set("type", 96).set("ct", 8).set("spf", 480).set("controlPort", 6001)});

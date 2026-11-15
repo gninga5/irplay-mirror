@@ -37,6 +37,7 @@ import androidx.appcompat.app.AppCompatActivity
 import com.irplay.tv.R
 import com.irplay.tv.core.AirPlayService
 import com.irplay.tv.core.AppSettings
+import com.irplay.tv.core.Lyrics
 import com.irplay.tv.core.CodecManager
 import com.irplay.tv.core.NativeBridge
 import com.irplay.tv.core.ReceiverState
@@ -68,6 +69,13 @@ class MainActivity : AppCompatActivity() {
 
         binding.nameRow.setOnClickListener { showRenameDialog() }
         binding.pinRow.setOnClickListener { showPinDialog() }
+        binding.lyricsRow.setOnClickListener {
+            val enable = !AppSettings.lyricsEnabled(this)
+            AppSettings.setLyricsEnabled(this, enable)
+            // Chi la attiva deve sapere che titolo e artista escono dalla TV: lo si dice subito.
+            if (enable) Toast.makeText(this, R.string.lyrics_enabled_toast, Toast.LENGTH_LONG).show()
+            renderLyricsSetting()
+        }
         binding.licensesButton.setOnClickListener { startActivity(Intent(this, LicensesActivity::class.java)) }
         binding.autoOpenRow.setOnClickListener { onAutoOpenPressed() }
 
@@ -75,10 +83,14 @@ class MainActivity : AppCompatActivity() {
         scope.launch { ReceiverState.status.collect { render(it) } }
         scope.launch { ReceiverState.publishedName.collect { renderName() } }
         scope.launch { ReceiverState.nowPlaying.collect { renderNowPlaying(it) } }
+        scope.launch { ReceiverState.lyrics.collect { renderLyrics() } }
         // La posizione del brano arriva da iOS ogni tanto: in mezzo la si fa avanzare qui.
         scope.launch {
             while (true) {
-                if (ReceiverState.status.value is ReceiverState.Status.Playing) renderProgress(ReceiverState.nowPlaying.value)
+                if (ReceiverState.status.value is ReceiverState.Status.Playing) {
+                    renderProgress(ReceiverState.nowPlaying.value)
+                    renderLyrics()
+                }
                 delay(500)
             }
         }
@@ -101,6 +113,7 @@ class MainActivity : AppCompatActivity() {
         renderAutoOpen()   // anche al ritorno dalla schermata di sistema dei permessi
         renderName()
         renderPin()
+        renderLyricsSetting()
     }
 
     override fun onStop() {
@@ -233,6 +246,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun renderNowPlaying(np: ReceiverState.NowPlaying) {
         binding.npTitle.text = np.title.ifBlank { getString(R.string.np_unknown_title) }
+        binding.npLabel.setText(if (np.paused) R.string.np_paused else R.string.np_label)
         binding.npArtist.text = np.artist
         binding.npAlbum.text = np.album
         binding.npArtwork.setImageBitmap(np.artwork)
@@ -247,11 +261,53 @@ class MainActivity : AppCompatActivity() {
             binding.npDuration.text = ""
             return
         }
-        val pos = (np.positionMs + (ReceiverState.elapsedNow() - np.progressAtElapsed)).coerceIn(0, np.durationMs)
+        val pos = np.currentPositionMs(ReceiverState.elapsedNow())
         binding.npProgress.visibility = View.VISIBLE
         binding.npProgress.progress = (pos * 1000 / np.durationMs).toInt()
         binding.npPosition.text = formatTime(pos)
         binding.npDuration.text = formatTime(np.durationMs)
+    }
+
+    private val lyricViews by lazy {
+        listOf(binding.npL0, binding.npL1, binding.npL2, binding.npL3, binding.npL4)
+    }
+
+    /**
+     * Testo del brano: 5 righe con quella in corso al centro. Con il testo sincronizzato la riga
+     * è quella il cui tempo è appena passato (con 300 ms di anticipo, perché leggere richiede un
+     * attimo); con il solo testo la posizione è stimata in proporzione alla durata.
+     * L'album si nasconde per fare spazio.
+     */
+    private fun renderLyrics() {
+        val result = ReceiverState.lyrics.value
+        val np = ReceiverState.nowPlaying.value
+        val pos = np.currentPositionMs(ReceiverState.elapsedNow())
+        val (lines, index) = when (result) {
+            is Lyrics.Result.Synced -> {
+                val i = result.lines.indexOfLast { it.timeMs <= pos + 300 }
+                result.lines.map { it.text.ifEmpty { "♪" } } to i
+            }
+            is Lyrics.Result.Plain -> {
+                val i = if (np.durationMs > 0) (pos * result.lines.size / np.durationMs).toInt() else 0
+                result.lines to i.coerceIn(0, result.lines.size - 1)
+            }
+            Lyrics.Result.Instrumental -> listOf(getString(R.string.lyrics_instrumental)) to 0
+            else -> {
+                binding.npLyrics.visibility = View.GONE
+                binding.npAlbum.visibility = View.VISIBLE
+                return
+            }
+        }
+        binding.npLyrics.visibility = View.VISIBLE
+        binding.npAlbum.visibility = View.GONE
+        for (k in 0 until 5) {
+            val i = index - 2 + k
+            lyricViews[k].text = if (i in lines.indices) lines[i] else ""
+        }
+    }
+
+    private fun renderLyricsSetting() {
+        binding.lyricsSummary.setText(if (AppSettings.lyricsEnabled(this)) R.string.lyrics_on else R.string.lyrics_off)
     }
 
     private fun formatTime(ms: Long): String {

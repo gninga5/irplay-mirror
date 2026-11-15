@@ -44,15 +44,15 @@
     <string name="privacy_note">Everything on your device screen appears on the TV, including notifications and messages.</string>
 
     <string name="auto_open_title">Open automatically</string>
-    <string name="auto_open_on">iRPlay Mirror opens when an iPhone or iPad starts mirroring</string>
-    <string name="auto_open_off">Off: open iRPlay Mirror before you start mirroring</string>
-    <string name="auto_open_needs_permission">Needs system permission: press OK to grant it</string>
+    <string name="auto_open_on">Opens when mirroring starts</string>
+    <string name="auto_open_off">Off</string>
+    <string name="auto_open_needs_permission">Press OK to grant permission</string>
     <string name="overlay_unavailable">This TV does not allow automatic opening: open iRPlay Mirror before you start mirroring.</string>
 
     <string name="pin_title">PIN code</string>
-    <string name="pin_summary_off">Off: anyone on the network can mirror</string>
-    <string name="pin_summary_first">Asked the first time a device connects</string>
-    <string name="pin_summary_always">Asked every time</string>
+    <string name="pin_summary_off">Off</string>
+    <string name="pin_summary_first">First time only</string>
+    <string name="pin_summary_always">Every time</string>
     <string name="pin_dialog_title">PIN code</string>
     <string name="pin_option_off">Off</string>
     <string name="pin_option_first">Only the first time (recommended)</string>
@@ -66,9 +66,15 @@
     <string name="status_short_playing">Playing</string>
     <string name="status_playing">Playing audio from %1$s</string>
     <string name="np_label">Now playing</string>
+    <string name="np_paused">Paused</string>
     <string name="np_unknown_title">AirPlay audio</string>
     <string name="np_source">From %1$s · press BACK to stop</string>
     <string name="np_artwork_description">Album artwork</string>
+    <string name="lyrics_title">Song lyrics</string>
+    <string name="lyrics_on">On (lrclib.net)</string>
+    <string name="lyrics_off">Off</string>
+    <string name="lyrics_enabled_toast">Song title and artist will be looked up on lrclib.net to show the lyrics.</string>
+    <string name="lyrics_instrumental">Instrumental</string>
     <string name="licenses_button">Licenses</string>
     <string name="licenses_title">Licenses</string>
     <string name="licenses_hint">Use the up and down arrows on the remote to scroll.</string>

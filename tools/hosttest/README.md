@@ -10,3 +10,5 @@
   - watchdog: `ADB=... ./remote_client 3 vanish`
   - audio: `adb emu redir add tcp:7100:7000`, poi `ADB=... ./remote_client 5 audio`
     (il redirect dell'emulatore serve perché adb forward non inoltra UDP).
+  - musica: `adb emu redir add tcp:7100:7000`, poi `ADB=... ./remote_client 14 music`
+    (ALAC, metadati di un brano noto, avanzamento, poi pausa come fa iOS: FLUSH e TEARDOWN dell'audio)

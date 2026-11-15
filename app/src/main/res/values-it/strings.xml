@@ -41,15 +41,15 @@
     <string name="privacy_note">Sulla TV appare tutto ciò che è sullo schermo del dispositivo, comprese notifiche e messaggi.</string>
 
     <string name="auto_open_title">Apertura automatica</string>
-    <string name="auto_open_on">iRPlay Mirror si apre quando un iPhone o iPad inizia la duplicazione</string>
-    <string name="auto_open_off">Disattivata: apri iRPlay Mirror prima di iniziare la duplicazione</string>
-    <string name="auto_open_needs_permission">Serve un permesso di sistema: premi OK per concederlo</string>
+    <string name="auto_open_on">Si apre quando inizia la duplicazione</string>
+    <string name="auto_open_off">Disattivata</string>
+    <string name="auto_open_needs_permission">Premi OK per dare il permesso</string>
     <string name="overlay_unavailable">Questa TV non consente l\'apertura automatica: apri iRPlay Mirror prima di iniziare la duplicazione.</string>
 
     <string name="pin_title">Codice PIN</string>
-    <string name="pin_summary_off">Disattivato: chiunque sulla rete può trasmettere</string>
-    <string name="pin_summary_first">Richiesto al primo collegamento di ogni dispositivo</string>
-    <string name="pin_summary_always">Richiesto a ogni collegamento</string>
+    <string name="pin_summary_off">Disattivato</string>
+    <string name="pin_summary_first">Solo al primo collegamento</string>
+    <string name="pin_summary_always">A ogni collegamento</string>
     <string name="pin_dialog_title">Codice PIN</string>
     <string name="pin_option_off">Disattivato</string>
     <string name="pin_option_first">Solo la prima volta (consigliato)</string>
@@ -63,9 +63,15 @@
     <string name="status_short_playing">In riproduzione</string>
     <string name="status_playing">Audio da %1$s</string>
     <string name="np_label">In riproduzione</string>
+    <string name="np_paused">In pausa</string>
     <string name="np_unknown_title">Audio AirPlay</string>
     <string name="np_source">Da %1$s · premi INDIETRO per interrompere</string>
     <string name="np_artwork_description">Copertina dell\'album</string>
+    <string name="lyrics_title">Testi delle canzoni</string>
+    <string name="lyrics_on">Attivati (lrclib.net)</string>
+    <string name="lyrics_off">Disattivati</string>
+    <string name="lyrics_enabled_toast">Titolo e artista del brano verranno cercati su lrclib.net per mostrare il testo.</string>
+    <string name="lyrics_instrumental">Brano strumentale</string>
     <string name="licenses_button">Licenze</string>
     <string name="licenses_title">Licenze</string>
     <string name="licenses_hint">Usa le frecce su e giù del telecomando per scorrere.</string>

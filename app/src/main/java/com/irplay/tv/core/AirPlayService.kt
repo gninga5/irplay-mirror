@@ -47,6 +47,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -68,6 +69,7 @@ class AirPlayService : Service() {
     // (es. una Sony con AirPlay integrato che si chiama come la TV). Solo in memoria.
     private var nameOverride: String? = null
     private var overrideBase: String? = null   // nome scelto che aveva causato il conflitto
+    private var lyricsJob: Job? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -252,26 +254,42 @@ class AirPlayService : Service() {
             }
         }
 
+        /**
+         * In pausa iOS chiude il solo flusso audio (TEARDOWN 96) dopo qualche secondo e lo riapre
+         * alla ripresa, con la connessione sempre attiva. Si resta quindi sulla schermata del brano,
+         * in pausa: la si lascia solo quando l'iPhone si scollega (onSessionEnded) o se inizia la
+         * duplicazione dello schermo.
+         */
         override fun onAudioStopped() {
             audio?.onAudioStopped()
-            val status = ReceiverState.status.value
-            if (status is ReceiverState.Status.Playing) {
-                ReceiverState.set(ReceiverState.Status.Connected(status.clientName))
-                ReceiverState.clearNowPlaying()
-            }
+            if (ReceiverState.status.value is ReceiverState.Status.Playing) markPaused()
         }
 
         override fun onAudioFrame(data: ByteArray) { audio?.onAudioFrame(data) }
         override fun onVolume(db: Float) { audio?.onVolume(db) }
-        override fun onAudioFlush() { audio?.onAudioFlush() }
+        override fun onAudioFlush() {
+            audio?.onAudioFlush()
+            markPaused()   // FLUSH = pausa o salto: se è un salto, il prossimo avanzamento lo riattiva
+        }
+    }
+
+    /** Ferma la barra di avanzamento sulla posizione raggiunta. */
+    private fun markPaused() {
+        val now = ReceiverState.elapsedNow()
+        ReceiverState.updateNowPlaying {
+            if (it.paused) it else it.copy(positionMs = it.currentPositionMs(now), progressAtElapsed = now, paused = true)
+        }
     }
 
     /** Titolo, copertina e avanzamento del brano (thread nativi). */
     private val nowPlayingListener = object : NativeBridge.NowPlayingListener {
         override fun onMetadata(title: String, artist: String, album: String) {
+            val before = ReceiverState.nowPlaying.value
             ReceiverState.updateNowPlaying {
                 it.copy(title = cleanText(title), artist = cleanText(artist), album = cleanText(album))
             }
+            val now = ReceiverState.nowPlaying.value
+            if (now.title != before.title || now.artist != before.artist) scope.launch { loadLyrics() }
         }
 
         override fun onArtwork(image: ByteArray) {
@@ -280,9 +298,29 @@ class AirPlayService : Service() {
         }
 
         override fun onProgress(positionMs: Long, durationMs: Long) {
+            // iOS invia l'avanzamento quando la riproduzione (ri)parte: vale come "non più in pausa".
             ReceiverState.updateNowPlaying {
-                it.copy(positionMs = positionMs, durationMs = durationMs, progressAtElapsed = ReceiverState.elapsedNow())
+                it.copy(positionMs = positionMs, durationMs = durationMs,
+                    progressAtElapsed = ReceiverState.elapsedNow(), paused = false)
             }
+        }
+    }
+
+    /**
+     * Cerca il testo del brano appena cambiato. Si aspetta un attimo perché iOS manda durata e
+     * avanzamento subito dopo i metadati, e la durata aiuta LRCLIB a scegliere la versione giusta.
+     * Una nuova ricerca annulla quella del brano precedente.
+     */
+    private fun loadLyrics() {
+        lyricsJob?.cancel()
+        ReceiverState.setLyrics(null)
+        if (!AppSettings.lyricsEnabled(applicationContext)) return
+        lyricsJob = scope.launch {
+            delay(LYRICS_DEBOUNCE_MS)
+            val np = ReceiverState.nowPlaying.value
+            val result = withContext(Dispatchers.IO) { Lyrics.fetch(np.title, np.artist, np.album, np.durationMs) }
+            val current = ReceiverState.nowPlaying.value
+            if (current.title == np.title && current.artist == np.artist) ReceiverState.setLyrics(result)
         }
     }
 
@@ -557,5 +595,6 @@ class AirPlayService : Service() {
         private const val PIN_SCREEN_TIMEOUT_MS = 125_000L   // poco oltre la validità nativa (120 s)
         private const val CT_AAC_ELD = 8
         private const val ARTWORK_MAX_PX = 600
+        private const val LYRICS_DEBOUNCE_MS = 700L
     }
 }

@@ -41,7 +41,15 @@ object ReceiverState {
         val positionMs: Long = 0,
         val durationMs: Long = 0,
         val progressAtElapsed: Long = 0,
-    )
+        val paused: Boolean = false,
+    ) {
+        /** Posizione attuale: in riproduzione avanza da sola dall'ultimo aggiornamento di iOS. */
+        fun currentPositionMs(now: Long): Long {
+            if (durationMs <= 0) return 0
+            val p = if (paused) positionMs else positionMs + (now - progressAtElapsed)
+            return p.coerceIn(0, durationMs)
+        }
+    }
 
     val nowPlaying: StateFlow<NowPlaying> = nowPlayingMutable
 
@@ -55,6 +63,16 @@ object ReceiverState {
 
     fun clearNowPlaying() {
         nowPlayingMutable.value = NowPlaying()
+        lyricsMutable.value = null
+    }
+
+    private val lyricsMutable = MutableStateFlow<Lyrics.Result?>(null)
+
+    /** Testo del brano in corso (null = non cercato o in ricerca). */
+    val lyrics: StateFlow<Lyrics.Result?> = lyricsMutable
+
+    fun setLyrics(value: Lyrics.Result?) {
+        lyricsMutable.value = value
     }
 
     fun elapsedNow(): Long = SystemClock.elapsedRealtime()

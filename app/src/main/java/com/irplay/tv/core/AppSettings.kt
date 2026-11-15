@@ -15,6 +15,7 @@ object AppSettings {
     private const val KEY_AUTO_OPEN = "auto_open"
     private const val KEY_TV_NAME = "tv_name"
     private const val KEY_PIN_MODE = "pin_mode"
+    private const val KEY_LYRICS = "lyrics"
 
     /** Valori uguali a irplay::PinMode nel codice nativo. */
     const val PIN_OFF = 0
@@ -45,6 +46,16 @@ object AppSettings {
             ?: systemName(context)
 
     fun hasCustomName(context: Context): Boolean = prefs(context).contains(KEY_TV_NAME)
+
+    /**
+     * Testi delle canzoni da lrclib.net. Disattivati di default: è l'unica funzione che manda
+     * dati (titolo e artista del brano) a un servizio esterno, quindi la sceglie l'utente.
+     */
+    fun lyricsEnabled(context: Context): Boolean = prefs(context).getBoolean(KEY_LYRICS, false)
+
+    fun setLyricsEnabled(context: Context, enabled: Boolean) {
+        prefs(context).edit().putBoolean(KEY_LYRICS, enabled).apply()
+    }
 
     /** Richiesta del PIN. Disattivata di default: chi la vuole la attiva dalla home. */
     fun pinMode(context: Context): Int =

@@ -25,7 +25,7 @@ fi
 for f in playfair omg_hax hand_garble modified_md5 sap_hash; do
   clang -c -w -fsanitize=address -g -O1 -I"$P" "$P/$f.c" -o "$OUT/pf_$f.o"
 done
-SRC="$C/sps_rewriter.cpp $C/airplay_server.cpp $C/airplay_info.cpp $C/airplay_crypto.cpp $C/media_streams.cpp $C/nal_parser.cpp $C/net_util.cpp $C/plist_reader.cpp $C/plist_writer.cpp"
+SRC="$C/srp_server.cpp $C/sps_rewriter.cpp $C/airplay_server.cpp $C/airplay_info.cpp $C/airplay_crypto.cpp $C/media_streams.cpp $C/nal_parser.cpp $C/net_util.cpp $C/plist_reader.cpp $C/plist_writer.cpp"
 clang++ -std=c++20 -Wall -Wextra -Wformat=2 -Werror -Wno-missing-field-initializers \
   -fsanitize=address,undefined -fno-omit-frame-pointer -g -O1 \
   -I"$C" -I"$P" -I"$M/include" -I"$SODIUM/include" \
@@ -33,6 +33,7 @@ clang++ -std=c++20 -Wall -Wextra -Wformat=2 -Werror -Wno-missing-field-initializ
   -o "$OUT/server_test"
 
 cd "$OUT"
+cp "$HERE/srp_client.py" .
 plutil -convert binary1 -o utf16.bplist "$HERE/utf16.json"
 ASAN_OPTIONS=detect_leaks=0 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 ./server_test 2>&1 | grep -v "^I/"
 

@@ -40,6 +40,7 @@ import com.irplay.tv.core.AppSettings
 import com.irplay.tv.core.CodecManager
 import com.irplay.tv.core.NativeBridge
 import com.irplay.tv.core.ReceiverState
+import com.irplay.tv.core.TrustedDevices
 import com.irplay.tv.databinding.ActivityMainBinding
 import java.net.Inet4Address
 import kotlinx.coroutines.MainScope
@@ -65,11 +66,20 @@ class MainActivity : AppCompatActivity() {
         binding.root.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> fitVideo() }
 
         binding.nameRow.setOnClickListener { showRenameDialog() }
+        binding.pinRow.setOnClickListener { showPinDialog() }
         binding.licensesButton.setOnClickListener { startActivity(Intent(this, LicensesActivity::class.java)) }
         binding.autoOpenRow.setOnClickListener { onAutoOpenPressed() }
 
         AirPlayService.start(this)
         scope.launch { ReceiverState.status.collect { render(it) } }
+        scope.launch {
+            ReceiverState.pin.collect { pin ->
+                // Il PIN si mostra solo a schermo; nessun log, nessuna copia oltre lo stato.
+                binding.pinOverlay.visibility = if (pin == null) View.GONE else View.VISIBLE
+                binding.pinDigits.text = pin ?: ""
+                if (pin != null) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            }
+        }
     }
 
     override fun onStart() {
@@ -80,6 +90,7 @@ class MainActivity : AppCompatActivity() {
         } ?: getString(R.string.receiver_no_network)
         renderAutoOpen()   // anche al ritorno dalla schermata di sistema dei permessi
         renderName()
+        renderPin()
     }
 
     override fun onStop() {
@@ -201,6 +212,49 @@ class MainActivity : AppCompatActivity() {
         if (ReceiverState.isInSession) Toast.makeText(this, R.string.rename_deferred, Toast.LENGTH_LONG).show()
         AirPlayService.reload(this)
         return true
+    }
+
+    private fun renderPin() {
+        binding.pinSummary.setText(
+            when (AppSettings.pinMode(this)) {
+                AppSettings.PIN_FIRST_TIME -> R.string.pin_summary_first
+                AppSettings.PIN_ALWAYS -> R.string.pin_summary_always
+                else -> R.string.pin_summary_off
+            }
+        )
+    }
+
+    /**
+     * Scelta della modalità PIN. Cambiarla modifica il record mDNS (pw=true/false), quindi il
+     * servizio ripubblica l'annuncio. "Dimentica" cancella le chiavi dei dispositivi associati:
+     * al prossimo collegamento dovranno inserire di nuovo il PIN.
+     */
+    private fun showPinDialog() {
+        val options = arrayOf(
+            getString(R.string.pin_option_off),
+            getString(R.string.pin_option_first),
+            getString(R.string.pin_option_always),
+        )
+        val builder = AlertDialog.Builder(this)
+            .setTitle(R.string.pin_dialog_title)
+            .setSingleChoiceItems(options, AppSettings.pinMode(this)) { dialog, which ->
+                if (which != AppSettings.pinMode(this)) {
+                    AppSettings.setPinMode(this, which)
+                    renderPin()
+                    AirPlayService.reload(this)
+                }
+                dialog.dismiss()
+            }
+            .setNegativeButton(R.string.rename_cancel, null)
+        val paired = TrustedDevices.count(this)
+        if (paired > 0) {
+            builder.setNeutralButton(getString(R.string.pin_forget, paired)) { _, _ ->
+                TrustedDevices.clear(this)
+                Toast.makeText(this, R.string.pin_forgotten, Toast.LENGTH_LONG).show()
+                AirPlayService.reload(this)   // il server nativo ha una copia dell'elenco in memoria
+            }
+        }
+        builder.show()
     }
 
     private fun renderAutoOpen() {

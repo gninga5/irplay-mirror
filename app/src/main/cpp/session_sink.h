@@ -42,6 +42,13 @@ namespace irplay {
         virtual void onAudioFrame(const uint8_t* data, size_t len) = 0;
         /** Volume AirPlay in dB: da -30 (minimo) a 0; -144 = muto. */
         virtual void onVolume(float db) = 0;
+
+        /** Un dispositivo chiede il PIN: va mostrato a schermo (mai nel log). */
+        virtual void onPinRequested(const std::string& pin) = 0;
+        /** PIN usato, scaduto o sbagliato: va tolto dallo schermo. */
+        virtual void onPinDismissed() = 0;
+        /** Nuovo dispositivo associato con il PIN: la sua chiave Ed25519 va salvata. */
+        virtual void onClientTrusted(const uint8_t publicKey[32]) = 0;
     };
 
 } // namespace irplay

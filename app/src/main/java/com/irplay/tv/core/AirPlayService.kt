@@ -45,6 +45,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -90,6 +91,7 @@ class AirPlayService : Service() {
 
                 audio = AudioRenderer(applicationContext).also { NativeBridge.audioSink = it }
                 NativeBridge.sessionListener = sessionListener
+                NativeBridge.pinListener = pinListener
                 this@AirPlayService.identity = identity
                 publish()
             }
@@ -129,7 +131,7 @@ class AirPlayService : Service() {
      */
     private suspend fun republish() {
         renamePending = false
-        Log.i(TAG, "Nome della TV cambiato: ripubblico il servizio")
+        Log.i(TAG, "Impostazioni cambiate (nome o PIN): ripubblico il servizio")
         withContext(Dispatchers.IO) { unpublish() }
         publish()
     }
@@ -142,6 +144,8 @@ class AirPlayService : Service() {
         }
         registrations.clear()
         NativeBridge.sessionListener = null
+        NativeBridge.pinListener = null
+        ReceiverState.setPin(null)
         NativeBridge.stopServer()     // prima si ritira l'annuncio, poi si chiudono le connessioni
         NativeBridge.audioSink = null
         audio?.release()
@@ -162,7 +166,7 @@ class AirPlayService : Service() {
             return NativeBridge.startServer(
                 PREFERRED_RTSP_PORT, deviceName.toByteArray(Charsets.UTF_8), identity.deviceId, identity.pairingId,
                 identity.publicKey, FEATURES, MODEL, SRCVERS, encodeTxt(airplayTxt(identity)), seed,
-                preferredFps(),
+                preferredFps(), AppSettings.pinMode(applicationContext), TrustedDevices.load(applicationContext),
             )
         } finally {
             seed.fill(0)
@@ -218,14 +222,42 @@ class AirPlayService : Service() {
     }
 
     /**
+     * Eventi del PIN (thread nativi). Il PIN va mostrato anche se l'apertura automatica è
+     * disattivata: senza vederlo l'utente non può completare l'associazione. Compare sia
+     * nell'app sia nella notifica, così è leggibile anche se Android blocca l'apertura.
+     */
+    private val pinListener = object : NativeBridge.PinListener {
+        override fun onPinRequested(pin: String) {
+            ReceiverState.setPin(pin)
+            updateNotification(getString(R.string.pin_notification, pin))
+            bringActivityToFront(force = true)
+            // Il server invalida il PIN dopo 2 minuti senza avvisare: lo si toglie anche dallo
+            // schermo, controllando che nel frattempo non ne sia arrivato uno nuovo.
+            scope.launch {
+                delay(PIN_SCREEN_TIMEOUT_MS)
+                if (ReceiverState.pin.value == pin) onPinDismissed()
+            }
+        }
+
+        override fun onPinDismissed() {
+            ReceiverState.setPin(null)
+            updateNotification(getString(R.string.receiver_waiting))
+        }
+
+        override fun onClientTrusted(publicKey: ByteArray) {
+            TrustedDevices.add(applicationContext, publicKey)
+        }
+    }
+
+    /**
      * Porta in primo piano lo schermo del video quando l'iPhone inizia a trasmettere, se
      * l'utente non ha disattivato "Apertura automatica" (AppSettings).
      * Da Android 10 l'avvio di un'Activity dal background è consentito solo se l'app ha il
      * permesso "mostra sopra altre app" (SYSTEM_ALERT_WINDOW) o è già visibile: senza, il
      * sistema ignora la richiesta e l'utente apre iRPlay dalla notifica o dal launcher.
      */
-    private fun bringActivityToFront() {
-        if (MainActivity.isVisible || !AppSettings.autoOpen(this)) return
+    private fun bringActivityToFront(force: Boolean = false) {
+        if (MainActivity.isVisible || (!force && !AppSettings.autoOpen(this))) return
         try {
             startActivity(
                 Intent(this, MainActivity::class.java).addFlags(
@@ -307,6 +339,9 @@ class AirPlayService : Service() {
         register(manager, raop)
     }
 
+    private val pinRequired: Boolean
+        get() = AppSettings.pinMode(applicationContext) != AppSettings.PIN_OFF
+
     /**
      * TXT di _airplay._tcp. Unica fonte sia per mDNS sia per GET /info: iOS confronta
      * le due copie e, se non coincidono, scarta il ricevitore senza dare errori.
@@ -317,7 +352,7 @@ class AirPlayService : Service() {
         // Status flags: 0x4 = uscita audio collegata. Il bit 0x80 significa "password richiesta":
         // con 0x84 iOS 27 avvia pair-pin-start e la connessione fallisce.
         "flags" to "0x4",
-        "pw" to "false",
+        "pw" to pinRequired.toString(),   // "true": iOS chiede il PIN mostrato sulla TV
         "model" to MODEL,               // iOS sceglie la versione del protocollo in base al modello
         "pi" to id.pairingId,
         "pk" to id.publicKeyHex,        // chiave pubblica Ed25519 per pair-verify
@@ -336,8 +371,8 @@ class AirPlayService : Service() {
         "am" to MODEL,
         "md" to "0,1,2",        // metadati: testo, copertina, avanzamento
         "rhd" to "5.6.0.0",
-        "pw" to "false",        // nessun PIN per ora: verrà aggiunto nella Fase 6
-        "sf" to "0x4",
+        "pw" to pinRequired.toString(),
+        "sf" to if (pinRequired) "0x8c" else "0x4",   // come UxPlay con il PIN a schermo
         "sr" to "44100",
         "ss" to "16",
         "sv" to "false",
@@ -412,5 +447,6 @@ class AirPlayService : Service() {
         }
 
         private const val ACTION_RELOAD = "com.irplay.tv.action.RELOAD"
+        private const val PIN_SCREEN_TIMEOUT_MS = 125_000L   // poco oltre la validità nativa (120 s)
     }
 }

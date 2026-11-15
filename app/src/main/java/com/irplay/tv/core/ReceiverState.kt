@@ -21,6 +21,14 @@ object ReceiverState {
     }
 
     private val mutable = MutableStateFlow<Status>(Status.Starting)
+    private val pinMutable = MutableStateFlow<String?>(null)
+
+    /** PIN da mostrare a schermo mentre un dispositivo si associa; null se nessuno. */
+    val pin: StateFlow<String?> = pinMutable
+
+    fun setPin(value: String?) {
+        pinMutable.value = value
+    }
     val status: StateFlow<Status> = mutable
 
     fun set(value: Status) {

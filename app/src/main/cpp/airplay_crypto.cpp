@@ -11,6 +11,7 @@
 #include <cstring>
 #include <mutex>
 
+#include <mbedtls/gcm.h>
 #include <mbedtls/platform_util.h>
 #include <sodium.h>
 
@@ -153,6 +154,69 @@ namespace irplay::crypto {
             return false;
         }
         state_ = State::Verified;
+        return true;
+    }
+
+    // ---------------------------------------------------------------- pair-setup-pin
+
+    bool PairingSession::pinBegin(const std::string& user, const std::string& pin,
+                                  std::vector<uint8_t>& salt, std::vector<uint8_t>& publicB) {
+        // Ogni nuova fase 1 annulla il tentativo precedente sulla stessa connessione.
+        srp_ = std::make_unique<srp::Server>();
+        pinProven_ = false;
+        pinDone_ = false;
+        return srp_->begin(user, pin, salt, publicB);
+    }
+
+    bool PairingSession::pinProof(const uint8_t* A, size_t lenA, const uint8_t* M1, size_t lenM1,
+                                  std::array<uint8_t, srp::kProofSize>& M2) {
+        if (!srp_) return false;
+        if (!srp_->verify(A, lenA, M1, lenM1, M2)) {
+            srp_.reset();   // PIN sbagliato: il tentativo è consumato
+            return false;
+        }
+        pinProven_ = true;
+        return true;
+    }
+
+    bool PairingSession::pinExchange(const Ed25519Identity& id, const uint8_t* epk, size_t lenEpk,
+                                     const uint8_t* tag, size_t lenTag,
+                                     std::array<uint8_t, 32>& outEpk, std::array<uint8_t, 16>& outTag) {
+        if (!srp_ || !pinProven_ || lenEpk != 32 || lenTag != 16) return false;
+
+        // Chiave e IV da K, come per pair-verify ma con sale "Pair-Setup-...". L'IV è da 16 byte
+        // (GCM con IV non standard: mbedTLS lo gestisce come previsto dalla specifica) e il suo
+        // ultimo byte viene incrementato prima di decifrare e di nuovo prima di cifrare la
+        // risposta: è il "nonce" non documentato che iOS si aspetta (vedi UxPlay pairing.c).
+        static constexpr char kSaltKey2[] = "Pair-Setup-AES-Key";
+        static constexpr char kSaltIv2[] = "Pair-Setup-AES-IV";
+        const auto& K = srp_->sessionKey();
+        uint8_t key[16], iv[16], clientPk[32];
+        sha512Prefix16(reinterpret_cast<const uint8_t*>(kSaltKey2), sizeof kSaltKey2 - 1, K.data(), K.size(), key);
+        sha512Prefix16(reinterpret_cast<const uint8_t*>(kSaltIv2), sizeof kSaltIv2 - 1, K.data(), K.size(), iv);
+        iv[15]++;
+
+        mbedtls_gcm_context gcm;
+        mbedtls_gcm_init(&gcm);
+        bool ok = mbedtls_gcm_setkey(&gcm, MBEDTLS_CIPHER_ID_AES, key, 128) == 0 &&
+                  // auth_decrypt verifica il tag prima di restituire il testo in chiaro:
+                  // una chiave manomessa non arriva mai al resto del codice.
+                  mbedtls_gcm_auth_decrypt(&gcm, 32, iv, 16, nullptr, 0, tag, 16, epk, clientPk) == 0;
+        if (ok) {
+            iv[15]++;
+            ok = mbedtls_gcm_crypt_and_tag(&gcm, MBEDTLS_GCM_ENCRYPT, 32, iv, 16, nullptr, 0,
+                                           id.publicKey(), outEpk.data(), 16, outTag.data()) == 0;
+        }
+        mbedtls_gcm_free(&gcm);
+        mbedtls_platform_zeroize(key, sizeof key);
+        mbedtls_platform_zeroize(iv, sizeof iv);
+        srp_.reset();   // K non serve più
+        pinProven_ = false;
+        if (!ok) return false;
+
+        std::memcpy(pinClientPk_.data(), clientPk, 32);
+        pinDone_ = true;
+        state_ = State::SetupDone;   // ora può seguire il normale pair-verify
         return true;
     }
 

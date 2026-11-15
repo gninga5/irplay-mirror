@@ -34,7 +34,8 @@ namespace {
     JavaVM* gVm = nullptr;
     jclass gBridge = nullptr;   // global ref
     jmethodID gOnSessionStarted, gOnSessionEnded, gOnVideoStarted, gOnVideoStopped, gOnVideoConfig,
-            gOnVideoFrame, gOnAudioStarted, gOnAudioStopped, gOnAudioFrame, gOnVolume;
+            gOnVideoFrame, gOnAudioStarted, gOnAudioStopped, gOnAudioFrame, gOnVolume,
+            gOnPinRequested, gOnPinDismissed, gOnClientTrusted;
 
     std::mutex gServerMutex;                       // start e stop possono arrivare da thread Kotlin diversi
     std::unique_ptr<irplay::AirPlayServer> gServer;
@@ -130,6 +131,28 @@ namespace {
             clearException(env);
         }
 
+        void onPinRequested(const std::string& pin) override {
+            JNIEnv* env = currentEnv();
+            if (!env) return;
+            jstring s = env->NewStringUTF(pin.c_str());   // solo cifre ASCII: modified UTF-8 coincide
+            if (s == nullptr) { clearException(env); return; }
+            env->CallStaticVoidMethod(gBridge, gOnPinRequested, s);
+            env->DeleteLocalRef(s);
+            clearException(env);
+        }
+
+        void onPinDismissed() override { callVoid(gOnPinDismissed); }
+
+        void onClientTrusted(const uint8_t publicKey[32]) override {
+            JNIEnv* env = currentEnv();
+            if (!env) return;
+            jbyteArray a = toJava(env, publicKey, 32);
+            if (a == nullptr) { clearException(env); return; }
+            env->CallStaticVoidMethod(gBridge, gOnClientTrusted, a);
+            env->DeleteLocalRef(a);
+            clearException(env);
+        }
+
     private:
         template <typename... Args>
         void callVoid(jmethodID m, Args... args) {
@@ -194,7 +217,10 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void*) {
                     && resolve(env, gOnAudioStarted, "onAudioStarted", "(I)V")
                     && resolve(env, gOnAudioStopped, "onAudioStopped", "()V")
                     && resolve(env, gOnAudioFrame, "onAudioFrame", "([B)V")
-                    && resolve(env, gOnVolume, "onVolume", "(F)V");
+                    && resolve(env, gOnVolume, "onVolume", "(F)V")
+                    && resolve(env, gOnPinRequested, "onPinRequested", "(Ljava/lang/String;)V")
+                    && resolve(env, gOnPinDismissed, "onPinDismissed", "()V")
+                    && resolve(env, gOnClientTrusted, "onClientTrusted", "([B)V");
     return ok ? JNI_VERSION_1_6 : JNI_ERR;
 }
 
@@ -202,7 +228,7 @@ JNIEXPORT jint JNICALL
 Java_com_irplay_tv_core_NativeBridge_startServer(
         JNIEnv* env, jclass, jint preferredPort, jbyteArray name, jstring deviceId, jstring pairingId,
         jbyteArray publicKey, jlong features, jstring model, jstring sourceVersion, jbyteArray txtAirPlay,
-        jbyteArray seed, jint maxFps) {
+        jbyteArray seed, jint maxFps, jint pinMode, jbyteArray trustedKeys) {
     if (preferredPort < 0 || preferredPort > 65535) return -1;
     if (seed == nullptr || env->GetArrayLength(seed) != 32) return -1;
 
@@ -225,13 +251,27 @@ Java_com_irplay_tv_core_NativeBridge_startServer(
     info.features = static_cast<uint64_t>(features);
     info.maxFps = static_cast<int>(maxFps);   // validato in buildInfoPlists
 
+    // Controllo di accesso: modalità PIN e chiavi dei dispositivi già associati (32 byte l'una,
+    // concatenate). Un array di lunghezza non multipla di 32 è un errore del chiamante.
+    irplay::AccessConfig access;
+    if (pinMode < 0 || pinMode > 2) return -1;
+    access.pin = static_cast<irplay::PinMode>(pinMode);
+    if (trustedKeys != nullptr) {
+        const jsize n = env->GetArrayLength(trustedKeys);
+        if (n % 32 != 0 || n > 64 * 32) return -1;
+        access.trusted.resize(static_cast<size_t>(n / 32));
+        for (jsize i = 0; i < n / 32; ++i) {
+            env->GetByteArrayRegion(trustedKeys, i * 32, 32, reinterpret_cast<jbyte*>(access.trusted[i].data()));
+        }
+    }
+
     unsigned char s[32];
     env->GetByteArrayRegion(seed, 0, 32, reinterpret_cast<jbyte*>(s));
 
     std::lock_guard<std::mutex> lock(gServerMutex);
     if (gServer) gServer->stop();
     gServer = std::make_unique<irplay::AirPlayServer>(std::make_shared<JavaSink>());
-    const int port = gServer->start(static_cast<uint16_t>(preferredPort), info, s);
+    const int port = gServer->start(static_cast<uint16_t>(preferredPort), info, s, access);
     sodium_memzero(s, sizeof s);
     if (port < 0) gServer.reset();
     return port;

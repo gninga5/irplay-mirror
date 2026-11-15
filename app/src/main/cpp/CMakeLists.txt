@@ -54,7 +54,8 @@ add_library(${CMAKE_PROJECT_NAME} SHARED
         net_util.cpp
         plist_reader.cpp
         plist_writer.cpp
-        sps_rewriter.cpp)
+        sps_rewriter.cpp
+        srp_server.cpp)
 
 # Hardening: questo codice legge pacchetti da una rete non fidata (la LAN).
 target_compile_options(${CMAKE_PROJECT_NAME} PRIVATE

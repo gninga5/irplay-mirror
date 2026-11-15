@@ -26,9 +26,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include <mbedtls/aes.h>
+
+#include "srp_server.h"
 
 namespace irplay::crypto {
 
@@ -65,6 +68,24 @@ namespace irplay::crypto {
         bool verifyStep2(const uint8_t* body, size_t len);
 
         bool verified() const { return state_ == State::Verified; }
+        /** Chiave Ed25519 del client ricevuta in pair-verify fase 1 (valida dopo verifyStep1). */
+        const uint8_t* clientEdKey() const { return theirEdPk_.data(); }
+
+        // ---- pair-setup-pin (PIN mostrato sulla TV) ----
+        // Fase 1: user = identificativo inviato da iOS, pin = 4 cifre. Restituisce salt e B.
+        bool pinBegin(const std::string& user, const std::string& pin,
+                      std::vector<uint8_t>& salt, std::vector<uint8_t>& publicB);
+        // Fase 2: verifica la prova SRP del client; in uscita la prova della TV (20 byte).
+        bool pinProof(const uint8_t* A, size_t lenA, const uint8_t* M1, size_t lenM1,
+                      std::array<uint8_t, srp::kProofSize>& M2);
+        // Fase 3: decifra (AES-GCM) la chiave Ed25519 del client e cifra la nostra.
+        bool pinExchange(const Ed25519Identity& id, const uint8_t* epk, size_t lenEpk,
+                         const uint8_t* tag, size_t lenTag,
+                         std::array<uint8_t, 32>& outEpk, std::array<uint8_t, 16>& outTag);
+        /** true dopo un pair-setup-pin completo su questa connessione. */
+        bool pinAuthenticated() const { return pinDone_; }
+        /** Chiave Ed25519 del client autenticata con il PIN (valida se pinAuthenticated()). */
+        const uint8_t* pinClientKey() const { return pinClientPk_.data(); }
         /** Segreto X25519 condiviso; valido solo se verified(). */
         const uint8_t* sharedSecret() const { return shared_.data(); }
 
@@ -75,6 +96,10 @@ namespace irplay::crypto {
 
         State state_ = State::Idle;
         std::array<uint8_t, 32> ourEcdhPk_{}, ourEcdhSk_{}, theirEcdhPk_{}, theirEdPk_{}, shared_{};
+        std::unique_ptr<srp::Server> srp_;
+        bool pinProven_ = false;
+        bool pinDone_ = false;
+        std::array<uint8_t, 32> pinClientPk_{};
     };
 
     class FairPlay {

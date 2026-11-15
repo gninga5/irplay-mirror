@@ -18,6 +18,7 @@
 #include <vector>
 
 #include <mbedtls/aes.h>
+#include <mbedtls/gcm.h>
 #include <sodium.h>
 
 #include "airplay_server.h"
@@ -63,6 +64,9 @@ public:
     void onAudioStopped() override { push({"astop"}); }
     void onAudioFrame(const uint8_t* d, size_t l) override { push({"aframe", Bytes(d, d + l)}); }
     void onVolume(float db) override { Event e{"vol"}; e.f = db; push(e); }
+    void onPinRequested(const std::string& pin) override { push({"pin", Bytes(pin.begin(), pin.end())}); }
+    void onPinDismissed() override { push({"pinoff"}); }
+    void onClientTrusted(const uint8_t pk[32]) override { push({"trusted", Bytes(pk, pk + 32)}); }
 };
 
 static std::mt19937 rng(12345);
@@ -232,6 +236,139 @@ static void testNames() {
     i.name = std::string(63, 'a'); CHECK(buildInfoPlists(i).has_value());
 }
 
+// ---------------------------------------------------------------- PIN (pair-setup-pin)
+
+static std::string hexOf(const Bytes& b) { static const char* d = "0123456789abcdef"; std::string s; for (auto x : b) { s += d[x >> 4]; s += d[x & 15]; } return s; }
+static Bytes fromHex(const std::string& h) { Bytes b; for (size_t i = 0; i + 1 < h.size(); i += 2) b.push_back((uint8_t) std::stoi(h.substr(i, 2), nullptr, 16)); return b; }
+
+// Esegue il client SRP indipendente in Python: restituisce A, M1, M2 atteso, K.
+static bool pySrp(const std::string& user, const std::string& pin, const Bytes& salt, const Bytes& B, Bytes out[4]) {
+    std::string cmd = "python3 -I srp_client.py '" + user + "' " + pin + " " + hexOf(salt) + " " + hexOf(B);
+    FILE* f = popen(cmd.c_str(), "r");
+    if (!f) return false;
+    char buf[4096] = {}; size_t n = fread(buf, 1, sizeof buf - 1, f); pclose(f);
+    std::string line(buf, n); size_t pos = 0;
+    for (int i = 0; i < 4; ++i) { size_t sp = line.find_first_of(" \n", pos); out[i] = fromHex(line.substr(pos, sp - pos)); pos = sp + 1; }
+    return out[0].size() > 0 && out[1].size() == 20;
+}
+
+// pair-verify con una chiave Ed25519 data (quella associata); code = esito della fase 1.
+static bool verifyWith(int fd, const uint8_t serverPk[32], const uint8_t edPk[32], const uint8_t edSk[64], int* bodyLen) {
+    uint8_t xPk[32], xSk[32], shared[32]; randombytes_buf(xSk, 32); crypto_scalarmult_base(xPk, xSk);
+    Bytes b1 = {1, 0, 0, 0}; b1.insert(b1.end(), xPk, xPk + 32); b1.insert(b1.end(), edPk, edPk + 32);
+    Resp r = rtsp(fd, "POST", "/pair-verify", b1, "", "HTTP/1.1");
+    *bodyLen = (int) r.body.size();
+    if (r.code != 200 || r.body.size() != 96) return false;
+    if (crypto_scalarmult(shared, xSk, r.body.data()) != 0) return false;
+    uint8_t key[16], iv[16]; std::string sk = "Pair-Verify-AES-Key", si = "Pair-Verify-AES-IV";
+    sha512_16(Bytes(sk.begin(), sk.end()), shared, 32, key); sha512_16(Bytes(si.begin(), si.end()), shared, 32, iv);
+    // la firma della TV deve essere valida con la sua chiave pubblica
+    uint8_t ssig[64], sm[64]; memcpy(ssig, r.body.data() + 32, 64); ctr(key, iv, 0, ssig, 64);
+    memcpy(sm, r.body.data(), 32); memcpy(sm + 32, xPk, 32);
+    if (crypto_sign_verify_detached(ssig, sm, 64, serverPk) != 0) return false;
+    uint8_t m[64], my[64]; memcpy(m, xPk, 32); memcpy(m + 32, r.body.data(), 32); crypto_sign_detached(my, nullptr, m, 64, edSk);
+    ctr(key, iv, 64, my, 64);
+    Bytes b2 = {0, 0, 0, 0}; b2.insert(b2.end(), my, my + 64);
+    return rtsp(fd, "POST", "/pair-verify", b2, "", "HTTP/1.1").code == 200;
+}
+
+// Fasi 1-3 di pair-setup-pin. Restituisce l'esito della fase 2 (true = PIN accettato).
+static bool pinPair(int fd, TestSink& sink, const uint8_t serverPk[32], const uint8_t edPk[32], bool wrongPin, bool* phase3ok) {
+    *phase3ok = false;
+    if (rtsp(fd, "POST", "/pair-pin-start", {}, "", "HTTP/1.1").code != 200) return false;
+    Event e; if (!sink.waitFor("pin", &e)) return false;
+    std::string pin(e.a.begin(), e.a.end());
+    CHECK(pin.size() == 4);
+    if (wrongPin) pin = pin == "0000" ? "0001" : "0000";
+    const std::string user = "A1:B2:C3:D4:E5:F6";
+    Resp r = rtsp(fd, "POST", "/pair-setup-pin", *plist::toBinary(plist::Dict().set("method", "pin").set("user", user)),
+                  "Content-Type: application/x-apple-binary-plist\r\n", "HTTP/1.1");
+    auto p1 = plist::parseBinary(r.body.data(), r.body.size());
+    if (r.code != 200 || !p1) return false;
+    Bytes salt = *p1->asDict()->find("salt")->asData(), B = *p1->asDict()->find("pk")->asData();
+    CHECK(salt.size() == 16);
+    Bytes v[4]; if (!pySrp(user, pin, salt, B, v)) { fprintf(stderr, "client SRP python fallito\n"); return false; }
+    r = rtsp(fd, "POST", "/pair-setup-pin", *plist::toBinary(plist::Dict().set("pk", v[0]).set("proof", v[1])),
+             "Content-Type: application/x-apple-binary-plist\r\n", "HTTP/1.1");
+    if (r.code != 200) return false;
+    auto p2 = plist::parseBinary(r.body.data(), r.body.size());
+    CHECK(p2 && *p2->asDict()->find("proof")->asData() == v[2]);   // M2 della TV = quello calcolato da Python
+    // Fase 3: chiave e IV da K (SHA-512), IV[15]++ per cifrare la nostra chiave, ancora ++ per la risposta.
+    uint8_t key[16], iv[16]; std::string sk = "Pair-Setup-AES-Key", si = "Pair-Setup-AES-IV";
+    sha512_16(Bytes(sk.begin(), sk.end()), v[3].data(), v[3].size(), key);
+    sha512_16(Bytes(si.begin(), si.end()), v[3].data(), v[3].size(), iv);
+    iv[15]++;
+    mbedtls_gcm_context g; mbedtls_gcm_init(&g); mbedtls_gcm_setkey(&g, MBEDTLS_CIPHER_ID_AES, key, 128);
+    uint8_t epk[32], tag[16];
+    mbedtls_gcm_crypt_and_tag(&g, MBEDTLS_GCM_ENCRYPT, 32, iv, 16, nullptr, 0, edPk, epk, 16, tag);
+    r = rtsp(fd, "POST", "/pair-setup-pin", *plist::toBinary(plist::Dict().set("epk", Bytes(epk, epk + 32)).set("authTag", Bytes(tag, tag + 16))),
+             "Content-Type: application/x-apple-binary-plist\r\n", "HTTP/1.1");
+    if (r.code == 200) {
+        auto p3 = plist::parseBinary(r.body.data(), r.body.size());
+        iv[15]++;
+        uint8_t spk[32];
+        const Bytes& se = *p3->asDict()->find("epk")->asData(); const Bytes& st = *p3->asDict()->find("authTag")->asData();
+        *phase3ok = mbedtls_gcm_auth_decrypt(&g, 32, iv, 16, nullptr, 0, st.data(), 16, se.data(), spk) == 0 && memcmp(spk, serverPk, 32) == 0;
+    }
+    mbedtls_gcm_free(&g);
+    return true;
+}
+
+static void testPin(const ReceiverInfo& baseInfo, const uint8_t seed[32], const uint8_t serverPk[32]) {
+    auto sink = std::make_shared<TestSink>();
+    AirPlayServer server(sink);
+    AccessConfig acc; acc.pin = PinMode::FirstTime;
+    const int port = server.start(0, baseInfo, seed, acc);
+    CHECK(port > 0);
+    uint8_t edPk[32], edSk[64]; crypto_sign_keypair(edPk, edSk);
+    int len = 0;
+
+    // pair-setup semplice: rifiutato con il PIN attivo (altrimenti aggirerebbe il PIN)
+    { int fd = connectTcp(port); CHECK(rtsp(fd, "POST", "/pair-setup", Bytes(edPk, edPk + 32), "", "HTTP/1.1").code == 470); close(fd); }
+    // dispositivo sconosciuto: pair-verify risponde vuoto (iOS passa a pair-pin-start)
+    { int fd = connectTcp(port); CHECK(!verifyWith(fd, serverPk, edPk, edSk, &len) && len == 0); close(fd); }
+    // SETUP senza pairing: rifiutato
+    { FakeIphone p; p.fd = connectTcp(port); CHECK(p.fairplay()); CHECK(rtsp(p.fd, "SETUP", "rtsp://x/1", setupBody(rnd(72), rnd(16), 0)).code == 470); close(p.fd); }
+
+    // PIN corretto: associazione completa, poi pair-verify e sessione
+    {
+        FakeIphone p; p.fd = connectTcp(port);
+        bool ok3 = false;
+        CHECK(pinPair(p.fd, *sink, serverPk, edPk, false, &ok3));
+        CHECK(ok3);
+        Event e; CHECK(sink->waitFor("trusted", &e) && e.a == Bytes(edPk, edPk + 32));
+        CHECK(sink->waitFor("pinoff"));
+        CHECK(verifyWith(p.fd, serverPk, edPk, edSk, &len));
+        CHECK(p.fairplay());
+        CHECK(rtsp(p.fd, "SETUP", "rtsp://x/1", setupBody(rnd(72), rnd(16), 0)).code == 200);
+        CHECK(sink->waitFor("start"));
+        rtsp(p.fd, "TEARDOWN", "rtsp://x/1");
+        close(p.fd);
+        CHECK(sink->waitFor("end"));
+    }
+    // connessione successiva: il dispositivo associato entra senza PIN, uno sconosciuto no
+    { int fd = connectTcp(port); CHECK(verifyWith(fd, serverPk, edPk, edSk, &len)); close(fd); }
+    { uint8_t o[32], os[64]; crypto_sign_keypair(o, os); int fd = connectTcp(port); CHECK(!verifyWith(fd, serverPk, o, os, &len) && len == 0); close(fd); }
+
+    // 3 PIN sbagliati: blocco, e pair-pin-start risponde 503
+    for (int i = 0; i < 3; ++i) {
+        int fd = connectTcp(port); bool ok3 = true;
+        pinPair(fd, *sink, serverPk, edPk, true, &ok3);
+        CHECK(!ok3);
+        close(fd);
+    }
+    { int fd = connectTcp(port); CHECK(rtsp(fd, "POST", "/pair-pin-start", {}, "", "HTTP/1.1").code == 503); close(fd); }
+    server.stop();
+
+    // modalità "sempre": anche il dispositivo già associato deve inserire il PIN
+    AirPlayServer always(sink);
+    AccessConfig acc2; acc2.pin = PinMode::Always; acc2.trusted.push_back({}); memcpy(acc2.trusted[0].data(), edPk, 32);
+    const int port2 = always.start(0, baseInfo, seed, acc2);
+    { int fd = connectTcp(port2); CHECK(!verifyWith(fd, serverPk, edPk, edSk, &len) && len == 0); close(fd); }
+    always.stop();
+    fprintf(stderr, "test PIN completati\n");
+}
+
 static Bytes infoTxt() { std::string e = "deviceid=02:11:22:33:44:55"; Bytes b{(uint8_t) e.size()}; b.insert(b.end(), e.begin(), e.end()); return b; }
 
 int main() {
@@ -248,6 +385,7 @@ int main() {
     info.publicKey.assign(pk, pk + 32); info.features = 0x5A7FFEE6; info.model = "AppleTV3,2"; info.sourceVersion = "220.68"; info.txtAirPlay = infoTxt();
     // chiave sbagliata -> deve rifiutare
     { auto bad = info; bad.publicKey[0] ^= 1; AirPlayServer s2(sink); CHECK(s2.start(0, bad, seed) < 0); }
+    testPin(info, seed, pk);
     const int port = server.start(0, info, seed);
     CHECK(port > 0);
 

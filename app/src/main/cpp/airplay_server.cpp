@@ -28,6 +28,7 @@
 #include <utility>
 
 #include <mbedtls/platform_util.h>
+#include <sodium.h>
 
 #include "log.h"
 #include "media_streams.h"
@@ -63,6 +64,9 @@ namespace irplay {
         constexpr int64_t kWatchdogMs    = 3000;        // video connesso: iOS invia dati almeno ogni secondo
         constexpr int64_t kSessionIdleMs = 60000;       // sessione aperta ma video non ancora connesso
         constexpr size_t kMaxClientName  = 64;
+        constexpr int64_t kPinLifetimeMs = 120000;      // un PIN vale 2 minuti
+        constexpr int kPinMaxFailures    = 3;           // poi blocco: 60 s, 120 s, 240 s ... fino a 64 min
+        constexpr size_t kMaxTrusted     = 64;
         constexpr const char* kServerHeader = "AirTunes/220.68";
         constexpr const char* kPublic =
                 "SETUP, RECORD, PAUSE, FLUSH, TEARDOWN, OPTIONS, GET_PARAMETER, SET_PARAMETER, POST, GET";
@@ -263,7 +267,18 @@ namespace irplay {
                                 txtOnly ? info_.txtOnly : info_.full);
         }
 
+        if (m == "POST" && u == "/pair-pin-start") return handlePinStart(st, req);
+        if (m == "POST" && u == "/pair-setup-pin") return handlePinSetup(st, req);
+
         if (m == "POST" && u == "/pair-setup") {
+            {
+                // Con il PIN attivo il pair-setup "semplice" aggirerebbe il PIN: si rifiuta.
+                std::lock_guard<std::mutex> lock(pinMutex_);
+                if (pinMode_ != PinMode::Off) {
+                    sendResponse(fd, &req, 470, "Connection Authorization Required");
+                    return false;
+                }
+            }
             if (!st.pairing.setup(req.body.data(), req.body.size())) {
                 sendResponse(fd, &req, 400, "Bad Request");
                 return false;
@@ -274,6 +289,12 @@ namespace irplay {
 
         if (m == "POST" && u == "/pair-verify") {
             if (!req.body.empty() && req.body[0] == 1) {
+                if (req.body.size() == 68 && !clientAllowed(st, req.body.data() + 36)) {
+                    // Dispositivo non associato: risposta vuota, come fa UxPlay. iOS la interpreta
+                    // come "serve il PIN" e passa a pair-pin-start sulla stessa connessione.
+                    LOGI("Dispositivo non associato: serve il PIN");
+                    return sendResponse(fd, &req, 200, "OK");
+                }
                 std::array<uint8_t, 96> out{};
                 if (!st.pairing.verifyStep1(*identity_, req.body.data(), req.body.size(), out)) {
                     LOGW("pair-verify fase 1 rifiutata");
@@ -347,6 +368,165 @@ namespace irplay {
         return sendResponse(fd, &req, 501, "Not Implemented");
     }
 
+    // =============================================================== PIN
+
+    bool AirPlayServer::clientAllowed(ConnState& st, const uint8_t clientEdKey[32]) {
+        std::lock_guard<std::mutex> lock(pinMutex_);
+        if (pinMode_ == PinMode::Off) return true;
+        // PIN appena inserito su questa connessione: vale solo per la chiave che l'ha usato.
+        if (st.pairing.pinAuthenticated()) return sodium_memcmp(clientEdKey, st.pairing.pinClientKey(), 32) == 0;
+        if (pinMode_ == PinMode::Always) return false;
+        for (const auto& k : trusted_) {
+            if (sodium_memcmp(k.data(), clientEdKey, 32) == 0) return true;
+        }
+        return false;
+    }
+
+    bool AirPlayServer::handlePinStart(ConnState& st, const RtspRequest& req) {
+        std::string pin;
+        {
+            std::lock_guard<std::mutex> lock(pinMutex_);
+            if (pinMode_ == PinMode::Off) return sendResponse(st.fd, &req, 404, "Not Found");
+            const int64_t now = monotonicMs();
+            if (now < lockedUntilMs_) {
+                LOGW("Troppi PIN sbagliati: richieste bloccate per %lld s",
+                     static_cast<long long>((lockedUntilMs_ - now) / 1000));
+                return sendResponse(st.fd, &req, 503, "Service Unavailable");
+            }
+            // 4 cifre uniformi dal generatore crittografico (randombytes_uniform evita il bias del modulo).
+            char buf[8];
+            std::snprintf(buf, sizeof buf, "%04u", static_cast<unsigned>(randombytes_uniform(10000)));
+            pin_ = buf;
+            pin = pin_;
+            pinExpiresMs_ = now + kPinLifetimeMs;
+            sodium_memzero(buf, sizeof buf);
+        }
+        LOGI("Richiesto il PIN: mostrato sulla TV");   // il PIN non va mai nel log
+        sink_->onPinRequested(pin);
+        sodium_memzero(pin.data(), pin.size());
+        return sendResponse(st.fd, &req, 200, "OK");
+    }
+
+    bool AirPlayServer::handlePinSetup(ConnState& st, const RtspRequest& req) {
+        const int fd = st.fd;
+        {
+            std::lock_guard<std::mutex> lock(pinMutex_);
+            if (pinMode_ == PinMode::Off) {
+                sendResponse(fd, &req, 470, "Client Authentication Failure");
+                return false;
+            }
+        }
+        const auto root = plist::parseBinary(req.body.data(), req.body.size());
+        const plist::Dict* d = root ? root->asDict() : nullptr;
+        if (d == nullptr) {
+            sendResponse(fd, &req, 400, "Bad Request");
+            return false;
+        }
+        auto fail = [&]() {
+            sendResponse(fd, &req, 470, "Client Authentication Failure");
+            return false;
+        };
+        const plist::Value* method = d->find("method");
+        const plist::Value* user = d->find("user");
+        const plist::Value* pk = d->find("pk");
+        const plist::Value* proof = d->find("proof");
+        const plist::Value* epk = d->find("epk");
+        const plist::Value* tag = d->find("authTag");
+
+        // ---- fase 1: {method: "pin", user: <id>} -> {pk: B, salt}
+        if (method && user && method->asString() && user->asString()) {
+            if (*method->asString() != "pin") return fail();
+            std::string pin;
+            {
+                std::lock_guard<std::mutex> lock(pinMutex_);
+                if (pin_.empty() || monotonicMs() > pinExpiresMs_) {
+                    pin_.clear();
+                    LOGW("pair-setup-pin senza un PIN valido");
+                } else {
+                    pin = pin_;
+                }
+            }
+            if (pin.empty()) return fail();
+            std::vector<uint8_t> salt, B;
+            const bool ok = st.pairing.pinBegin(*user->asString(), pin, salt, B);
+            sodium_memzero(pin.data(), pin.size());
+            if (!ok) return fail();
+            plist::Dict r;
+            r.set("pk", std::move(B)).set("salt", std::move(salt));
+            const auto bin = plist::toBinary(r);
+            return bin && sendResponse(fd, &req, 200, "OK", {{"Content-Type", kBplist}}, *bin);
+        }
+
+        // ---- fase 2: {pk: A, proof: M1} -> {proof: M2}
+        if (pk && proof && pk->asData() && proof->asData()) {
+            std::array<uint8_t, srp::kProofSize> M2{};
+            const auto& A = *pk->asData();
+            const auto& M1 = *proof->asData();
+            if (!st.pairing.pinProof(A.data(), A.size(), M1.data(), M1.size(), M2)) {
+                {
+                    std::lock_guard<std::mutex> lock(pinMutex_);
+                    pin_.clear();   // un PIN sbagliato non si può ritentare: ne serve uno nuovo
+                    if (++pinFailures_ >= kPinMaxFailures) {
+                        pinFailures_ = 0;
+                        const int shift = lockLevel_ < 6 ? lockLevel_ : 6;
+                        lockedUntilMs_ = monotonicMs() + (60000LL << shift);
+                        ++lockLevel_;
+                        LOGW("PIN sbagliato più volte: nuovi tentativi bloccati per %lld s",
+                             static_cast<long long>((60000LL << shift) / 1000));
+                    }
+                }
+                LOGW("PIN sbagliato");
+                sink_->onPinDismissed();
+                return fail();
+            }
+            plist::Dict r;
+            r.set("proof", plist::Data(M2.begin(), M2.end()));
+            const auto bin = plist::toBinary(r);
+            return bin && sendResponse(fd, &req, 200, "OK", {{"Content-Type", kBplist}}, *bin);
+        }
+
+        // ---- fase 3: {epk, authTag} (chiave del client cifrata) -> {epk, authTag} (la nostra)
+        if (epk && tag && epk->asData() && tag->asData()) {
+            std::array<uint8_t, 32> outEpk{};
+            std::array<uint8_t, 16> outTag{};
+            const auto& e = *epk->asData();
+            const auto& t = *tag->asData();
+            if (!st.pairing.pinExchange(*identity_, e.data(), e.size(), t.data(), t.size(), outEpk, outTag)) {
+                LOGW("pair-setup-pin fase 3 non valida");
+                return fail();
+            }
+            bool newTrusted = false;
+            {
+                std::lock_guard<std::mutex> lock(pinMutex_);
+                pin_.clear();
+                pinFailures_ = 0;
+                lockLevel_ = 0;
+                if (pinMode_ == PinMode::FirstTime) {
+                    std::array<uint8_t, 32> key{};
+                    std::memcpy(key.data(), st.pairing.pinClientKey(), 32);
+                    bool known = false;
+                    for (const auto& k : trusted_) known = known || sodium_memcmp(k.data(), key.data(), 32) == 0;
+                    if (!known) {
+                        if (trusted_.size() >= kMaxTrusted) trusted_.erase(trusted_.begin());   // il più vecchio
+                        trusted_.push_back(key);
+                        newTrusted = true;
+                    }
+                }
+            }
+            LOGI("Dispositivo associato con il PIN");
+            if (newTrusted) sink_->onClientTrusted(st.pairing.pinClientKey());
+            sink_->onPinDismissed();
+            plist::Dict r;
+            r.set("epk", plist::Data(outEpk.begin(), outEpk.end()))
+                    .set("authTag", plist::Data(outTag.begin(), outTag.end()));
+            const auto bin = plist::toBinary(r);
+            return bin && sendResponse(fd, &req, 200, "OK", {{"Content-Type", kBplist}}, *bin);
+        }
+
+        sendResponse(fd, &req, 400, "Bad Request");
+        return false;
+    }
+
     bool AirPlayServer::handleSetup(ConnState& st, const RtspRequest& req) {
         const int fd = st.fd;
         const auto root = plist::parseBinary(req.body.data(), req.body.size());
@@ -367,6 +547,19 @@ namespace irplay {
             if (!ekey || !eiv || eiv->size() != 16 || !st.fairplay.decryptKey(ekey->data(), ekey->size(), fpKey)) {
                 LOGW("SETUP: chiave FairPlay assente o handshake non completato");
                 sendResponse(fd, &req, 400, "Bad Request");
+                return false;
+            }
+            bool pinRequired;
+            {
+                std::lock_guard<std::mutex> lock(pinMutex_);
+                pinRequired = pinMode_ != PinMode::Off;
+            }
+            if (pinRequired && !st.pairing.verified()) {
+                // Con il PIN attivo solo un dispositivo che ha completato pair-verify (e quindi è
+                // stato autorizzato) può aprire una sessione.
+                mbedtls_platform_zeroize(fpKey, sizeof fpKey);
+                LOGW("SETUP senza pairing con PIN attivo: rifiutato");
+                sendResponse(fd, &req, 470, "Connection Authorization Required");
                 return false;
             }
             if (st.pairing.verified()) {
@@ -508,8 +701,15 @@ namespace irplay {
 
     AirPlayServer::~AirPlayServer() { stop(); }
 
-    int AirPlayServer::start(uint16_t preferredPort, const ReceiverInfo& info, const uint8_t seed[32]) {
+    int AirPlayServer::start(uint16_t preferredPort, const ReceiverInfo& info, const uint8_t seed[32],
+                             const AccessConfig& access) {
         if (running_) return -1;
+        {
+            std::lock_guard<std::mutex> lock(pinMutex_);
+            pinMode_ = access.pin;
+            trusted_ = access.trusted;
+            if (trusted_.size() > kMaxTrusted) trusted_.resize(kMaxTrusted);
+        }
         if (!crypto::init()) { LOGE("libsodium non inizializzata"); return -1; }
 
         identity_ = crypto::Ed25519Identity::fromSeed(seed);

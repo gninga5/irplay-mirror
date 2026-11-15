@@ -40,6 +40,13 @@ object NativeBridge {
         fun onVolume(db: Float)
     }
 
+    /** Eventi del PIN (pair-pin-start / pair-setup-pin). */
+    interface PinListener {
+        fun onPinRequested(pin: String)
+        fun onPinDismissed()
+        fun onClientTrusted(publicKey: ByteArray)
+    }
+
     /** Eventi di sessione per stato, notifica e UI. */
     interface SessionListener {
         fun onSessionStarted(clientName: String)
@@ -56,6 +63,7 @@ object NativeBridge {
     @Volatile var videoSink: VideoSink? = null
     @Volatile var audioSink: AudioSink? = null
     @Volatile var sessionListener: SessionListener? = null
+    @Volatile var pinListener: PinListener? = null
 
     /**
      * Calcola la chiave pubblica Ed25519 (32 byte) da un seed di 32 byte.
@@ -84,6 +92,8 @@ object NativeBridge {
         txtAirPlay: ByteArray,
         seed: ByteArray,
         maxFps: Int,
+        pinMode: Int,               // AppSettings.PIN_*
+        trustedKeys: ByteArray,     // chiavi Ed25519 dei dispositivi associati, 32 byte l'una
     ): Int
 
     /** Ferma il server e chiude tutte le connessioni. Idempotente. */
@@ -147,4 +157,13 @@ object NativeBridge {
 
     @JvmStatic
     fun onVolume(db: Float) = guarded("volume") { audioSink?.onVolume(db) }
+
+    @JvmStatic
+    fun onPinRequested(pin: String) = guarded("PIN") { pinListener?.onPinRequested(pin) }
+
+    @JvmStatic
+    fun onPinDismissed() = guarded("PIN") { pinListener?.onPinDismissed() }
+
+    @JvmStatic
+    fun onClientTrusted(publicKey: ByteArray) = guarded("PIN") { pinListener?.onClientTrusted(publicKey) }
 }

@@ -35,6 +35,18 @@ namespace irplay {
 
     struct RtspRequest;
 
+    /** Controllo di accesso con PIN (pair-pin-start / pair-setup-pin). */
+    enum class PinMode : int {
+        Off = 0,        // chiunque sulla rete può trasmettere
+        FirstTime = 1,  // PIN alla prima connessione; poi il dispositivo è riconosciuto dalla sua chiave
+        Always = 2,     // PIN a ogni connessione
+    };
+
+    struct AccessConfig {
+        PinMode pin = PinMode::Off;
+        std::vector<std::array<uint8_t, 32>> trusted;   // chiavi Ed25519 dei dispositivi già associati
+    };
+
     class AirPlayServer {
     public:
         explicit AirPlayServer(std::shared_ptr<SessionSink> sink) : sink_(std::move(sink)) {}
@@ -45,7 +57,8 @@ namespace irplay {
         /** Mette il server in ascolto su preferredPort; se è occupata ripiega su una porta
          *  assegnata dal sistema. Restituisce la porta reale, oppure -1 in caso di errore
          *  (anche se info non è valido o la chiave non corrisponde a info.publicKey). */
-        int start(uint16_t preferredPort, const ReceiverInfo& info, const uint8_t seed[32]);
+        int start(uint16_t preferredPort, const ReceiverInfo& info, const uint8_t seed[32],
+                  const AccessConfig& access = {});
 
         /** Chiude il socket di ascolto e tutte le connessioni, e attende la fine dei thread. Idempotente. */
         void stop();
@@ -69,6 +82,9 @@ namespace irplay {
 
         bool dispatch(ConnState& st, const RtspRequest& req);
         bool handleSetup(ConnState& st, const RtspRequest& req);
+        bool handlePinStart(ConnState& st, const RtspRequest& req);
+        bool handlePinSetup(ConnState& st, const RtspRequest& req);
+        bool clientAllowed(ConnState& st, const uint8_t clientEdKey[32]);
         bool handleTeardown(ConnState& st, const RtspRequest& req);
         void endSession(ConnState& st, EndReason reason);
 
@@ -84,6 +100,18 @@ namespace irplay {
         std::vector<std::unique_ptr<Client>> clients_;
         Client* sessionOwner_ = nullptr;   // protetto da mutex_
         std::atomic<float> volumeDb_{0.0f};
+
+        // Stato del PIN, condiviso tra connessioni: protetto da pinMutex_.
+        // Il limite ai tentativi è globale e non per connessione, altrimenti basterebbe
+        // aprire connessioni nuove per provare tutti i 10.000 PIN.
+        std::mutex pinMutex_;
+        PinMode pinMode_ = PinMode::Off;
+        std::vector<std::array<uint8_t, 32>> trusted_;
+        std::string pin_;               // PIN attivo, vuoto se nessuno
+        int64_t pinExpiresMs_ = 0;
+        int pinFailures_ = 0;
+        int lockLevel_ = 0;
+        int64_t lockedUntilMs_ = 0;
     };
 
 } // namespace irplay

@@ -14,6 +14,12 @@ object AppSettings {
     private const val FILE = "irplay_settings"
     private const val KEY_AUTO_OPEN = "auto_open"
     private const val KEY_TV_NAME = "tv_name"
+    private const val KEY_PIN_MODE = "pin_mode"
+
+    /** Valori uguali a irplay::PinMode nel codice nativo. */
+    const val PIN_OFF = 0
+    const val PIN_FIRST_TIME = 1
+    const val PIN_ALWAYS = 2
 
     /** Lunghezza massima scelta per l'interfaccia; il limite tecnico mDNS è 63 byte UTF-8. */
     const val MAX_NAME_CHARS = 40
@@ -39,6 +45,15 @@ object AppSettings {
             ?: systemName(context)
 
     fun hasCustomName(context: Context): Boolean = prefs(context).contains(KEY_TV_NAME)
+
+    /** Richiesta del PIN. Disattivata di default: chi la vuole la attiva dalla home. */
+    fun pinMode(context: Context): Int =
+        prefs(context).getInt(KEY_PIN_MODE, PIN_OFF).takeIf { it in PIN_OFF..PIN_ALWAYS } ?: PIN_OFF
+
+    fun setPinMode(context: Context, mode: Int) {
+        if (mode !in PIN_OFF..PIN_ALWAYS) return
+        prefs(context).edit().putInt(KEY_PIN_MODE, mode).apply()
+    }
 
     /** Salva il nome scelto (null = torna a quello di sistema). Restituisce false se il nome non è valido. */
     fun setTvName(context: Context, name: String?): Boolean {

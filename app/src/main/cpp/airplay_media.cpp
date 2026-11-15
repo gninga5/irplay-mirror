@@ -167,6 +167,11 @@ namespace irplay {
     // =============================================================== autorizzazione
 
     void AirPlayServer::notePeerVerified(const ConnState& st) {
+        if (st.client) {
+            std::lock_guard<std::mutex> lock(mutex_);
+            std::memcpy(st.client->edKey.data(), st.pairing.clientEdKey(), st.client->edKey.size());
+            st.client->hasEdKey = true;
+        }
         const auto addr = addrOf(st.peer);
         const int64_t now = monotonicMs();
         std::lock_guard<std::mutex> lock(pinMutex_);
@@ -379,9 +384,15 @@ namespace irplay {
         }
 
         // Duplicazione in corso da un altro dispositivo: la TV ha un solo schermo.
+        // Stesso dispositivo = stesso indirizzo oppure stessa chiave autenticata: iOS può aprire
+        // la sessione in IPv4 e mandare il video in IPv6 (visto su una TCL con l'app YouTube).
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            if (sessionOwner_ != nullptr && st.client != nullptr && sessionOwner_->addr != st.client->addr) {
+            const bool sameDevice = sessionOwner_ == nullptr || st.client == nullptr ||
+                                    sessionOwner_->addr == st.client->addr ||
+                                    (sessionOwner_->hasEdKey && st.client->hasEdKey &&
+                                     sessionOwner_->edKey == st.client->edKey);
+            if (!sameDevice) {
                 LOGW("Video rifiutato: un altro dispositivo sta duplicando lo schermo");
                 return sendResponse(fd, &req, 453, "Not Enough Bandwidth");
             }

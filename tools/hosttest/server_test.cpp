@@ -104,6 +104,15 @@ static int connectTcp(uint16_t port) {
     return fd;
 }
 
+// Come connectTcp ma in IPv6 (::1): lo stesso "iPhone" su un altro indirizzo.
+static int connectTcp6(uint16_t port) {
+    int fd = socket(AF_INET6, SOCK_STREAM, 0);
+    sockaddr_in6 a{}; a.sin6_family = AF_INET6; a.sin6_port = htons(port); a.sin6_addr = in6addr_loopback;
+    if (connect(fd, (sockaddr*) &a, sizeof a) != 0) { close(fd); return -1; }
+    int one = 1; setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
+    return fd;
+}
+
 struct Resp { int code = -1; std::string head; Bytes body; };
 
 static Resp rtsp(int fd, const std::string& method, const std::string& uri, const Bytes& body = {},
@@ -141,8 +150,9 @@ struct FakeIphone {
     int fd = -1;
     uint8_t edPk[32], edSk[64], xPk[32], xSk[32], shared[32];
     Bytes msg164;
-    bool pair(const uint8_t serverPk[32]) {
-        crypto_sign_keypair(edPk, edSk); randombytes_buf(xSk, 32); crypto_scalarmult_base(xPk, xSk);
+    bool pair(const uint8_t serverPk[32], bool newIdentity = true) {
+        if (newIdentity) crypto_sign_keypair(edPk, edSk);
+        randombytes_buf(xSk, 32); crypto_scalarmult_base(xPk, xSk);
         Resp r = rtsp(fd, "POST", "/pair-setup", Bytes(edPk, edPk + 32), "Content-Type: application/octet-stream\r\n", "HTTP/1.1");
         if (r.code != 200 || r.body.size() != 32 || memcmp(r.body.data(), serverPk, 32)) return false;
         Bytes b1 = {1, 0, 0, 0}; b1.insert(b1.end(), xPk, xPk + 32); b1.insert(b1.end(), edPk, edPk + 32);
@@ -952,6 +962,26 @@ int main() {
         CHECK(other.fairplay());
         Resp o = rtsp(other.fd, "SETUP", "rtsp://x/1", setupBody(rnd(72), rnd(16), 0));
         CHECK(o.code == 453);
+        close(other.fd);
+    }
+
+    // ---- AirPlay video durante la sessione: stesso iPhone in IPv6 (sessione aperta in IPv4)
+    {
+        const std::string sidH = "X-Apple-Session-ID: 0D6E5C3A-1111-4222-8333-944455556666\r\nContent-Type: application/x-apple-binary-plist\r\n";
+        const Bytes play = *plist::toBinary(plist::Dict().set("Content-Location", "https://example.com/v.mp4")
+                                                 .set("Start-Position-Seconds", 0.0));
+        FakeIphone same; same.fd = connectTcp6(port);
+        CHECK(same.fd >= 0);
+        memcpy(same.edPk, phone.edPk, 32); memcpy(same.edSk, phone.edSk, 64);
+        CHECK(same.pair(pk, false));
+        CHECK(rtsp(same.fd, "POST", "/play", play, sidH, "HTTP/1.1").code == 200 && sink->waitFor("mplay"));
+        CHECK(rtsp(same.fd, "POST", "/stop", {}, sidH, "HTTP/1.1").code == 200 && sink->waitFor("mstop"));
+        close(same.fd);
+        // un altro iPhone, anche autenticato, non può sostituire la duplicazione in corso
+        FakeIphone other; other.fd = connectTcp6(port);
+        CHECK(other.pair(pk));
+        CHECK(rtsp(other.fd, "POST", "/play", play, sidH, "HTTP/1.1").code == 453);
+        CHECK(!sink->waitFor("mplay", nullptr, 200));
         close(other.fd);
     }
 

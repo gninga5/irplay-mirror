@@ -85,6 +85,10 @@ namespace irplay {
             bool done = false;            // protetto da mutex_
             bool stopRequested = false;   // protetto da mutex_
             std::array<uint8_t, 16> addr{};   // indirizzo IPv6 (IPv4 mappato) del dispositivo
+            // Chiave Ed25519 autenticata con pair-verify su questa connessione (protetta da mutex_).
+            // Identifica il dispositivo anche quando usa indirizzi diversi (IPv4 e IPv6).
+            std::array<uint8_t, 32> edKey{};
+            bool hasEdKey = false;
             std::thread thread;
         };
         struct ConnState;      // stato per connessione, definito in server_conn.h

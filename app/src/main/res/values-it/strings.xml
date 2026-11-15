@@ -33,10 +33,10 @@
     <string name="privacy_note">Sulla TV appare tutto ciò che è sullo schermo del dispositivo, comprese notifiche e messaggi.</string>
 
     <string name="auto_open_title">Apertura automatica</string>
-    <string name="auto_open_on">iRPlay si apre quando un iPhone o iPad inizia la duplicazione</string>
-    <string name="auto_open_off">Disattivata: apri iRPlay prima di iniziare la duplicazione</string>
+    <string name="auto_open_on">iRPlay Mirror si apre quando un iPhone o iPad inizia la duplicazione</string>
+    <string name="auto_open_off">Disattivata: apri iRPlay Mirror prima di iniziare la duplicazione</string>
     <string name="auto_open_needs_permission">Serve un permesso di sistema: premi OK per concederlo</string>
-    <string name="overlay_unavailable">Questa TV non consente l\'apertura automatica: apri iRPlay prima di iniziare la duplicazione.</string>
+    <string name="overlay_unavailable">Questa TV non consente l\'apertura automatica: apri iRPlay Mirror prima di iniziare la duplicazione.</string>
 
     <string name="licenses_button">Licenze</string>
     <string name="licenses_title">Licenze</string>

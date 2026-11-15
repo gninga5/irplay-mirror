@@ -1,83 +1,134 @@
-# iRPlay Mirror
+<p align="center">
+  <img src="docs/banner.svg" alt="iRPlay Mirror" width="480">
+</p>
 
-Ricevitore di duplicazione schermo per Android TV / Google TV: iPhone e iPad trasmettono
-schermo e audio alla TV dal Centro di Controllo ("Duplica schermo"), senza Apple TV.
+<p align="center">
+  Mirror your iPhone, iPad or Mac to an Android TV. No Apple TV needed.
+</p>
 
-Codice sorgente: https://github.com/gninga5/irplay-mirror
+<p align="center">
+  <a href="https://github.com/gninga5/irplay-mirror/releases/latest">Download</a> ·
+  <a href="#building">Building</a> ·
+  <a href="#italiano">Italiano</a>
+</p>
 
-Licenza: **GPL-3.0** (vedi `LICENSE` e la schermata "Licenze" dell'app).
-iRPlay non è affiliato ad Apple Inc.
+---
 
-## Architettura
+I wanted to put my iPhone screen on the TV in the living room without buying an Apple TV,
+and the receivers I tried on Google TV were either laggy, full of ads, or both. So I wrote
+my own.
+
+iRPlay Mirror runs on the TV and shows up in **Control Center → Screen Mirroring** on any
+iPhone, iPad or Mac on the same network. Pick it and your screen (and sound) is on the TV.
+
+<p align="center">
+  <img src="docs/home.png" alt="Home screen on the TV" width="720">
+</p>
+
+## What it does
+
+- Screen mirroring from iOS, iPadOS and macOS, with audio
+- Hardware video decoding and a pipeline tuned for latency: on my Sony (MediaTek MT5895) a
+  frame takes around 10–20 ms from the network to the panel, at up to 60 fps
+- Works with the remote: press BACK to stop mirroring
+- If the phone walks out of Wi-Fi range, the TV notices within 3 seconds and goes back to the
+  home screen
+- Can bring itself to the front when you start mirroring (you can turn this off)
+- English and Italian, following the TV language
+
+What it doesn't do (yet): HEVC/4K, AirPlay "video" (the kind where YouTube hands the TV a
+URL), multi-room audio, and there's no PIN, so anyone on your network can mirror to it.
+
+## Installing
+
+Grab the APK from the [latest release](https://github.com/gninga5/irplay-mirror/releases/latest)
+and sideload it. The easiest way is adb:
+
+1. On the TV: Settings → System → About, press OK seven times on *Android TV OS build* to unlock
+   developer options, then turn on USB debugging (and network debugging if your TV has it).
+2. From a computer on the same network: `adb connect <tv-ip>:5555` and accept the prompt on the TV.
+3. `adb install iRPlay-Mirror-1.1.0.apk`
+
+Needs Android TV / Google TV 10 or newer on an ARM chip (pretty much every TV and stick out
+there).
+
+Tip: switch the TV to its *Game* picture mode while mirroring. Most of the remaining delay is
+the TV's own image processing, and Game mode turns most of it off.
+
+## How it works
+
+The receiver speaks the same protocol an Apple TV does. The networking and crypto are in C++
+(`app/src/main/cpp`), the Android side is Kotlin (`app/src/main/java`).
 
 ```
-UI e ciclo di vita (Kotlin)        ui/MainActivity, core/AirPlayService, core/BootReceiver
-  - SurfaceView, D-pad, IP           servizio in primo piano (mediaPlayback) + MulticastLock
-  - mDNS con NsdManager              _airplay._tcp e _raop._tcp
-        |  JNI (jni_bridge.cpp, core/NativeBridge.kt)
-Motore di rete (C++20)             airplay_server, airplay_crypto, media_streams
-  - RTSP/HTTP: /info, pair-setup, pair-verify, fp-setup, SETUP, RECORD, TEARDOWN...
-  - Ed25519/X25519/SHA-512 (libsodium), AES-CTR/CBC (mbedTLS), FairPlay (playfair)
-  - watchdog 3 s, una sessione alla volta
-        |                                   |
-Video: AVCC -> Annex-B (nal_parser)    Audio: RTP AAC-ELD (AES-CBC)
-MediaCodec asincrono su SurfaceView    MediaCodec AAC + AudioTrack bassa latenza
-(core/CodecManager)                    (audio/AudioRenderer), audio focus
+Kotlin   MainActivity (SurfaceView, remote)   AirPlayService (foreground service, mDNS)
+           CodecManager (MediaCodec)             AudioRenderer (AAC-ELD → AudioTrack)
+              ▲ JNI
+C++      RTSP server · pairing (Ed25519/X25519) · FairPlay handshake · AES-CTR video / AES-CBC audio
+         plist parser · H.264 AVCC → Annex-B · SPS rewrite for low latency · 3 s watchdog
 ```
 
-Protocollo: AirPlay 1 con pairing "legacy" (feature bit 27), lo stesso usato da UxPlay e
-RPiPlay. La catena delle chiavi è descritta in `app/src/main/cpp/airplay_crypto.h`.
+A couple of things that took a while to figure out, in case they help someone else:
 
-## Compilare
+- iOS never says whether its H.264 stream uses B-frames, so MediaTek decoders keep a reorder
+  buffer "just in case" and hold back up to 18 frames. Rewriting the SPS to declare zero
+  reorder frames (same trick Moonlight uses) brought latency down from a few hundred
+  milliseconds to ~11 ms. If B-frames ever show up, the app switches back to the original SPS.
+- After the first connection iOS skips `pair-setup` and goes straight to `pair-verify`.
+- The `0x80` bit in the mDNS `flags` record means "password required". With it set, iOS 27
+  asks for a PIN and then gives up.
 
-1. Clonare con i submodule: `git clone --recursive https://github.com/gninga5/irplay-mirror.git` (oppure `git submodule update --init`).
-2. Generare una volta i sorgenti di mbedTLS (serve Python 3 con `jinja2` e `jsonschema`):
-   ```
-   cd app/src/main/cpp/third_party/mbedtls
-   python3 -m pip install -r scripts/basic.requirements.txt
-   make generated_files
-   ```
-   La build Gradle usa `GEN_FILES=OFF` e non dipende da Python.
-3. libsodium è in `app/libs/libsodium-1.0.22.0.aar` (Prefab), compilato con
-   `dist-build/android-aar.sh` dai sorgenti ufficiali con firma minisign verificata.
-4. `./gradlew :app:assembleRelease` → `app/build/outputs/apk/release/app-release.apk`.
-   Per firmare con una chiave propria, definire in `~/.gradle/gradle.properties` (mai nel
-   repository) `IRPLAY_STORE_FILE`, `IRPLAY_STORE_PASSWORD`, `IRPLAY_KEY_ALIAS`,
-   `IRPLAY_KEY_PASSWORD`; senza, l'APK è firmato con la chiave di debug (solo per test).
+The key derivation chain is documented at the top of `airplay_crypto.h`.
 
-## Download
+## Building
 
-L'APK firmato di ogni versione è nella pagina
-[Releases](https://github.com/gninga5/irplay-mirror/releases).
+```
+git clone --recursive https://github.com/gninga5/irplay-mirror.git
+cd irplay-mirror/app/src/main/cpp/third_party/mbedtls
+python3 -m pip install -r scripts/basic.requirements.txt
+make generated_files
+cd -
+./gradlew :app:assembleRelease
+```
 
-## Test
+The mbedTLS step only has to be done once; the Gradle build itself doesn't need Python.
+libsodium ships as a prebuilt AAR in `app/libs` (built from the official sources with
+`dist-build/android-aar.sh`).
 
-- `tools/hosttest/run_tests.sh`: motore nativo sul Mac con ASan/UBSan e iPhone simulato.
-- `tools/hosttest/remote_client.cpp`: iPhone simulato contro l'app nell'emulatore TV
-  (video H.264 reale, watchdog, audio AAC-ELD). Istruzioni in `tools/hosttest/README.md`.
-- Emulatore: è dietro NAT e un iPhone vero non lo vede; con iPhone serve una TV reale.
+To sign with your own key, put `IRPLAY_STORE_FILE`, `IRPLAY_STORE_PASSWORD`,
+`IRPLAY_KEY_ALIAS` and `IRPLAY_KEY_PASSWORD` in `~/.gradle/gradle.properties`. Without them
+the release build falls back to the debug key.
 
-## Installazione sulla TV (adb)
+### Tests
 
-1. Sulla TV: Impostazioni → Sistema → Informazioni → premere 7 volte su "Build del sistema
-   operativo Android TV" → nelle Opzioni sviluppatore attivare "Debug USB" (e "Debug ADB in
-   rete" se presente).
-2. Dal computer, sulla stessa rete: `adb connect <IP-della-TV>:5555`, accettare sulla TV.
-3. `adb install -r iRPlay.apk`
+`tools/hosttest/run_tests.sh` builds the native engine for macOS with AddressSanitizer and
+UBSan and runs it against a fake iPhone: pairing, FairPlay, video and audio decryption,
+watchdog, malformed requests and a few hundred thousand fuzzed plists and SPS. There's also a
+client that talks to the app running in the TV emulator, see `tools/hosttest/README.md`.
 
-## Limiti noti
+## Credits and license
 
-- Solo H.264 (niente HEVC/4K) e solo duplicazione schermo: nessun AirPlay "video" (YouTube/
-  app che inviano un URL) e nessun AirPlay 2 audio multiroom.
-- Audio e video sono riprodotti appena arrivano, senza sincronizzazione NTP: la latenza
-  resta bassa, ma su alcune TV l'audio può risultare leggermente sfasato.
-- Apertura automatica dell'app all'avvio della duplicazione: solo se l'utente concede
-  "Mostra sopra altre app" (pulsante "Apri automaticamente"); altrimenti si apre iRPlay a mano.
-- Nessun PIN (pw=false): chiunque sulla stessa rete può trasmettere. Previsto per la Fase 6.
+iRPlay Mirror is released under the **GPL-3.0** (see `LICENSE`).
 
-## Pubblicazione
+It stands on the shoulders of [UxPlay](https://github.com/FDH2/UxPlay) and RPiPlay, whose
+reverse-engineering work on the protocol made this possible. The FairPlay part uses
+*playfair* (GPL-3) and reply tables by Juho Vähä-Herttua (LGPL-2.1+). Crypto comes from
+[Mbed TLS](https://github.com/Mbed-TLS/mbedtls) (Apache-2.0) and
+[libsodium](https://libsodium.org) (ISC). The full notices are in the app under *Licenses*.
 
-- Il nome sullo Store non deve contenere "AirPlay" (marchio Apple).
-- Play Console: dichiarare il servizio in primo piano `mediaPlayback` e il permesso
-  `SYSTEM_ALERT_WINDOW`.
-- GPL-3: pubblicare il sorgente corrispondente a ogni APK distribuito.
+iRPlay Mirror is an independent project and is not affiliated with or endorsed by Apple Inc.
+AirPlay, iPhone, iPad and Mac are trademarks of Apple Inc.
+
+---
+
+## Italiano
+
+iRPlay Mirror trasforma una TV Android / Google TV in un ricevitore per la duplicazione
+schermo: da iPhone, iPad o Mac apri il Centro di Controllo, tocca *Duplica schermo* e scegli
+**iRPlay Mirror**. Video e audio arrivano sulla TV, con una latenza molto bassa.
+
+Per installarla scarica l'APK dall'[ultima release](https://github.com/gninga5/irplay-mirror/releases/latest)
+e installalo con `adb install` (i passaggi sono nella sezione *Installing* qui sopra).
+L'interfaccia è in italiano se la TV è impostata in italiano.
+
+Il consiglio più utile: metti la TV in modalità immagine *Gioco* mentre duplichi lo schermo.

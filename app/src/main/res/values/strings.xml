@@ -36,10 +36,10 @@
     <string name="privacy_note">Everything on your device screen appears on the TV, including notifications and messages.</string>
 
     <string name="auto_open_title">Open automatically</string>
-    <string name="auto_open_on">iRPlay opens when an iPhone or iPad starts mirroring</string>
-    <string name="auto_open_off">Off: open iRPlay before you start mirroring</string>
+    <string name="auto_open_on">iRPlay Mirror opens when an iPhone or iPad starts mirroring</string>
+    <string name="auto_open_off">Off: open iRPlay Mirror before you start mirroring</string>
     <string name="auto_open_needs_permission">Needs system permission: press OK to grant it</string>
-    <string name="overlay_unavailable">This TV does not allow automatic opening: open iRPlay before you start mirroring.</string>
+    <string name="overlay_unavailable">This TV does not allow automatic opening: open iRPlay Mirror before you start mirroring.</string>
 
     <string name="licenses_button">Licenses</string>
     <string name="licenses_title">Licenses</string>

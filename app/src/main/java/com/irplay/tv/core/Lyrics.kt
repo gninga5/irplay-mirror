@@ -5,8 +5,9 @@
  * AirPlay non trasmette i testi (iOS invia solo titolo, artista, album, copertina e
  * avanzamento), quindi li si cerca online, in quest'ordine, fermandosi al primo che risponde:
  *  1. lrcmux.dev  - aggregatore (Deezer, KuGou, YouTube Music); testi sincronizzati riga per riga
- *  2. Karalyr     - archivio aperto di testi sincronizzati parola per parola (API stile LRCLIB)
+ *  2. LRCLIB      - archivio aperto, testi sincronizzati o semplici
  *  3. lyrics.ovh  - solo testo, senza tempi
+ * Le richieste partono solo se la TV ha una connessione a Internet verificata (vedi isOnline).
  *
  * Privacy: è l'unica funzione dell'app che contatta servizi esterni; invia soltanto titolo,
  * artista, album e durata del brano, nessun dato del dispositivo o dell'utente. È indicato nella
@@ -18,12 +19,16 @@
  */
 package com.irplay.tv.core
 
+import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.Uri
 import android.util.Log
 import java.io.ByteArrayOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import javax.net.ssl.HttpsURLConnection
+import org.json.JSONArray
 import org.json.JSONObject
 
 object Lyrics {
@@ -41,7 +46,8 @@ object Lyrics {
 
     private const val TAG = "iRPlay_Lyrics"
     private const val HOST_LRCMUX = "api.lrcmux.dev"
-    private const val HOST_KARALYR = "www.karalyr.com"
+    private const val HOST_LRCLIB = "lrclib.net"
+    private const val DURATION_TOLERANCE_S = 3.0
     private const val HOST_LYRICS_OVH = "api.lyrics.ovh"
     private const val USER_AGENT = "iRPlay-Mirror/1.1 (https://github.com/gninga5/irplay-mirror)"
     private const val MAX_BYTES = 512 * 1024
@@ -60,19 +66,36 @@ object Lyrics {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Result>?) = size > 32
     }
 
-    /** Da chiamare fuori dal main thread. Non lancia eccezioni. */
-    fun fetch(title: String, artist: String, album: String, durationMs: Long): Result {
+    /**
+     * true solo se la rete in uso porta davvero a Internet: NET_CAPABILITY_VALIDATED significa che
+     * Android ha verificato la connessione (non basta essere collegati al router, né essere su un
+     * Wi-Fi con pagina di login). Senza, nessuna richiesta parte verso i servizi dei testi.
+     */
+    fun isOnline(context: Context): Boolean {
+        val cm = context.getSystemService(ConnectivityManager::class.java) ?: return false
+        val caps = cm.getNetworkCapabilities(cm.activeNetwork) ?: return false
+        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+    }
+
+    /** Da chiamare fuori dal main thread. Non lancia eccezioni. Senza Internet non contatta nessuno. */
+    fun fetch(context: Context, title: String, artist: String, album: String, durationMs: Long): Result {
         if (title.isBlank() || artist.isBlank()) return Result.NotFound
+        if (!isOnline(context)) return Result.NotFound   // non in cache: con la rete si riproverà
         val key = "$artist\u0000$title\u0000$album\u0000${durationMs / 2000}"
         synchronized(cache) { cache[key]?.let { return it } }
 
         var anyFailed = false
         val providers = listOf(
             { fromLrcmux(title, artist, album, durationMs) },
-            { fromKaralyr(title, artist, album, durationMs) },
+            { fromLrclib(title, artist, album, durationMs) },
             { fromLyricsOvh(title, artist) },
         )
         for (provider in providers) {
+            if (!isOnline(context)) {   // connessione persa a metà: ci si ferma, senza ricordare "non trovato"
+                anyFailed = true
+                break
+            }
             when (val o = safely(provider)) {
                 is Outcome.Found -> {
                     synchronized(cache) { cache[key] = o.result }
@@ -118,17 +141,39 @@ object Lyrics {
         return plain(txt)
     }
 
-    /** Karalyr: risposta nel formato di LRCLIB; i tempi parola per parola vengono rimossi da parseLrc. */
-    private fun fromKaralyr(title: String, artist: String, album: String, durationMs: Long): Outcome {
-        val uri = Uri.Builder().scheme("https").authority(HOST_KARALYR).path("/api/get")
+    /**
+     * LRCLIB: prima la corrispondenza esatta (con la durata distingue le versioni dello stesso
+     * brano), poi la ricerca per titolo e artista preferendo un risultato sincronizzato con durata
+     * compatibile.
+     */
+    private fun fromLrclib(title: String, artist: String, album: String, durationMs: Long): Outcome {
+        val get = Uri.Builder().scheme("https").authority(HOST_LRCLIB).path("/api/get")
             .appendQueryParameter("track_name", title)
             .appendQueryParameter("artist_name", artist)
             .apply {
                 if (album.isNotBlank()) appendQueryParameter("album_name", album)
                 if (durationMs > 0) appendQueryParameter("duration", (durationMs / 1000).toString())
             }.build()
-        val body = request(uri) ?: return Outcome.Missing
-        val o = JSONObject(body)
+        request(get)?.let { body -> fromLrclibJson(JSONObject(body)).let { if (it != Outcome.Missing) return it } }
+
+        val search = Uri.Builder().scheme("https").authority(HOST_LRCLIB).path("/api/search")
+            .appendQueryParameter("track_name", title)
+            .appendQueryParameter("artist_name", artist)
+            .build()
+        val items = JSONArray(request(search) ?: return Outcome.Missing)
+        var best: JSONObject? = null
+        for (i in 0 until minOf(items.length(), 20)) {
+            val item = items.optJSONObject(i) ?: continue
+            val durationOk = durationMs <= 0 ||
+                kotlin.math.abs(item.optDouble("duration", 0.0) - durationMs / 1000.0) <= DURATION_TOLERANCE_S
+            if (!durationOk) continue
+            val bestSynced = best != null && !best.isNull("syncedLyrics")
+            if (best == null || (!bestSynced && !item.isNull("syncedLyrics"))) best = item
+        }
+        return best?.let(::fromLrclibJson) ?: Outcome.Missing
+    }
+
+    private fun fromLrclibJson(o: JSONObject): Outcome {
         if (o.optBoolean("instrumental", false)) return Outcome.Found(Result.Instrumental)
         if (!o.isNull("syncedLyrics")) {
             val lines = parseLrc(o.optString("syncedLyrics"))
@@ -196,7 +241,7 @@ object Lyrics {
 
     // "[01:23.45] testo" (anche più tempi sulla stessa riga: "[00:10.00][01:10.00] ritornello")
     private val tag = Regex("""^\[(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?]""")
-    // LRC esteso (Karalyr, Deezer): "<00:01.74>" prima di ogni parola; qui interessano solo le righe.
+    // LRC esteso (Deezer e altri): "<00:01.74>" prima di ogni parola; qui interessano solo le righe.
     private val wordTag = Regex("""<\d{1,3}:\d{2}(?:[.:]\d{1,3})?>""")
 
     internal fun parseLrc(lrc: String): List<Line> {

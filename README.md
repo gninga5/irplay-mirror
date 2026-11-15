@@ -39,9 +39,9 @@ iPhone, iPad or Mac on the same network. Pick it and your screen (and sound) is 
 - Works as an AirPlay speaker too: pick it for music or podcasts and the TV shows what's
   playing, with artwork and progress
 - Synced lyrics while music plays. AirPlay doesn't carry lyrics, so they're looked up online
-  ([lrcmux.dev](https://lrcmux.dev), then [Karalyr](https://www.karalyr.com), then
+  ([lrcmux.dev](https://lrcmux.dev), then [LRCLIB](https://lrclib.net), then
   [lyrics.ovh](https://lyrics.ovh)); only the song title, artist, album and duration are sent,
-  and it can be turned off from the home screen
+  nothing is requested when the TV is offline, and it can be turned off from the home screen
 - PIN on by default: a new device has to enter the code shown on the TV the first time it
   connects (can be set to every time, or off)
 - Each TV can have its own name

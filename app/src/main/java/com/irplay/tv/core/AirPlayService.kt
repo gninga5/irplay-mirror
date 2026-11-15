@@ -33,6 +33,9 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.MediaCodecList
 import android.media.MediaFormat
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.net.wifi.WifiManager
@@ -71,6 +74,21 @@ class AirPlayService : Service() {
     private var overrideBase: String? = null   // nome scelto che aveva causato il conflitto
     private var lyricsJob: Job? = null
 
+    /**
+     * Se il testo non è stato cercato perché la TV era offline, lo si cerca appena torna una
+     * connessione a Internet verificata, sempre che si stia ancora ascoltando un brano.
+     */
+    private val networkCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
+            if (caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) &&
+                ReceiverState.status.value is ReceiverState.Status.Playing &&
+                ReceiverState.lyrics.value == null && lyricsJob?.isActive != true
+            ) {
+                scope.launch { loadLyrics() }
+            }
+        }
+    }
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -100,6 +118,7 @@ class AirPlayService : Service() {
                 audio = AudioRenderer(applicationContext)
                 NativeBridge.audioSink = audioSink
                 NativeBridge.nowPlayingListener = nowPlayingListener
+                getSystemService(ConnectivityManager::class.java)?.registerDefaultNetworkCallback(networkCallback)
                 NativeBridge.sessionListener = sessionListener
                 NativeBridge.pinListener = pinListener
                 this@AirPlayService.identity = identity
@@ -161,6 +180,7 @@ class AirPlayService : Service() {
         NativeBridge.sessionListener = null
         NativeBridge.pinListener = null
         NativeBridge.nowPlayingListener = null
+        runCatching { getSystemService(ConnectivityManager::class.java)?.unregisterNetworkCallback(networkCallback) }
         ReceiverState.setPin(null)
         ReceiverState.clearNowPlaying()
         NativeBridge.stopServer()     // prima si ritira l'annuncio, poi si chiudono le connessioni
@@ -315,10 +335,14 @@ class AirPlayService : Service() {
         lyricsJob?.cancel()
         ReceiverState.setLyrics(null)
         if (!AppSettings.lyricsEnabled(applicationContext)) return
+        if (!Lyrics.isOnline(applicationContext)) {   // TV senza Internet: nessuna richiesta
+            Log.i(TAG, "TV senza Internet: testo non cercato (si riproverà quando torna la connessione)")
+            return
+        }
         lyricsJob = scope.launch {
             delay(LYRICS_DEBOUNCE_MS)
             val np = ReceiverState.nowPlaying.value
-            val result = withContext(Dispatchers.IO) { Lyrics.fetch(np.title, np.artist, np.album, np.durationMs) }
+            val result = withContext(Dispatchers.IO) { Lyrics.fetch(applicationContext, np.title, np.artist, np.album, np.durationMs) }
             val current = ReceiverState.nowPlaying.value
             if (current.title == np.title && current.artist == np.artist) ReceiverState.setLyrics(result)
         }

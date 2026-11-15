@@ -52,7 +52,7 @@ TESTI DELLE CANZONI
 
 Durante la musica iRPlay Mirror cerca il testo del brano online, perché AirPlay non lo
 trasmette. Vengono inviati solo titolo, artista, album e durata del brano, a questi servizi
-e in quest'ordine: lrcmux.dev (https://lrcmux.dev), Karalyr (https://www.karalyr.com) e
+e in quest'ordine, solo quando la TV è connessa a Internet: lrcmux.dev (https://lrcmux.dev), LRCLIB (https://lrclib.net) e
 lyrics.ovh (https://lyrics.ovh). I testi appartengono ai rispettivi aventi diritto.
 Si può disattivare dalla home ("Testi delle canzoni").
 

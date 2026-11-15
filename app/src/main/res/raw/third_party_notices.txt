@@ -52,7 +52,7 @@ SONG LYRICS
 
 While music is playing, iRPlay Mirror looks up the song lyrics online, because AirPlay does
 not carry them. Only the song title, artist, album and duration are sent, to these services,
-in this order: lrcmux.dev (https://lrcmux.dev), Karalyr (https://www.karalyr.com) and
+in this order, and only when the TV is connected to the internet: lrcmux.dev (https://lrcmux.dev), LRCLIB (https://lrclib.net) and
 lyrics.ovh (https://lyrics.ovh). Lyrics belong to their respective rights holders.
 You can turn this off from the home screen ("Song lyrics").
 

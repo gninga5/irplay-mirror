@@ -72,6 +72,7 @@ class MainActivity : AppCompatActivity() {
 
         AirPlayService.start(this)
         scope.launch { ReceiverState.status.collect { render(it) } }
+        scope.launch { ReceiverState.publishedName.collect { renderName() } }
         scope.launch {
             ReceiverState.pin.collect { pin ->
                 // Il PIN si mostra solo a schermo; nessun log, nessuna copia oltre lo stato.
@@ -166,7 +167,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun renderName() {
-        val name = AppSettings.tvName(this)
+        val name = ReceiverState.publishedName.value ?: AppSettings.tvName(this)
         binding.receiverName.text = name
         binding.step3.text = getString(R.string.step_3, name)
     }

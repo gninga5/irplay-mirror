@@ -62,6 +62,9 @@ class AirPlayService : Service() {
     // Cambio di nome richiesto durante una sessione: applicato quando finisce, per non
     // interrompere la duplicazione in corso.
     @Volatile private var renamePending = false
+    // Nome alternativo usato quando quello scelto è già annunciato da un altro dispositivo
+    // (es. una Sony con AirPlay integrato che si chiama come la TV). Solo in memoria.
+    private var nameOverride: String? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -69,6 +72,7 @@ class AirPlayService : Service() {
         // startForeground va chiamato subito: Android termina il servizio se non arriva entro pochi secondi.
         startInForeground()
         if (intent?.action == ACTION_RELOAD && started) {
+            nameOverride = null   // l'utente ha cambiato le impostazioni: si riparte dal suo nome
             if (ReceiverState.isInSession) renamePending = true else scope.launch { republish() }
             return START_STICKY
         }
@@ -102,7 +106,8 @@ class AirPlayService : Service() {
     /** Avvia il server e annuncia la TV con il nome corrente. */
     private suspend fun publish() {
         val id = identity ?: return
-        deviceName = AppSettings.tvName(applicationContext)
+        deviceName = nameOverride ?: AppSettings.tvName(applicationContext)
+        ReceiverState.setPublishedName(deviceName)
         val rtspPort = withContext(Dispatchers.IO) { startNativeServer(id) }
         if (rtspPort <= 0) {
             Log.e(TAG, "Server RTSP non avviato, servizio fermato")
@@ -384,10 +389,23 @@ class AirPlayService : Service() {
 
     private fun register(manager: NsdManager, info: NsdServiceInfo) {
         val type = info.serviceType
+        val requested = info.serviceName
         val listener = object : NsdManager.RegistrationListener {
             override fun onServiceRegistered(s: NsdServiceInfo) {
-                // In caso di conflitto di nome il sistema rinomina in automatico ("iRPlay (2)").
                 Log.i(TAG, "Annunciato: ${s.serviceName} ($type)")
+                // In caso di conflitto il sistema rinomina da solo ("TV della cucina (2)"), ma
+                // GET /info continuerebbe a dire il nome originale e l'utente vedrebbe due voci
+                // quasi uguali senza sapere quale è questa app. Si ripubblica una volta sola
+                // con un nome che la distingue: "TV della cucina (iRPlay)".
+                if (type == "_airplay._tcp" && s.serviceName != requested && nameOverride == null) {
+                    val suffix = " (iRPlay)"
+                    val base = requested.take(AppSettings.MAX_NAME_CHARS - suffix.length).trimEnd()
+                    nameOverride = AppSettings.sanitizeName(base + suffix)
+                    Log.i(TAG, "Nome già usato da un altro dispositivo: ripubblico con un nome distinto")
+                    scope.launch { republish() }
+                } else if (type == "_airplay._tcp") {
+                    ReceiverState.setPublishedName(s.serviceName)
+                }
             }
             override fun onRegistrationFailed(s: NsdServiceInfo, errorCode: Int) {
                 Log.e(TAG, "Registrazione fallita $type, codice $errorCode")

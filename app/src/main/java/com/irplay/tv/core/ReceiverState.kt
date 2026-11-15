@@ -22,6 +22,14 @@ object ReceiverState {
 
     private val mutable = MutableStateFlow<Status>(Status.Starting)
     private val pinMutable = MutableStateFlow<String?>(null)
+    private val nameMutable = MutableStateFlow<String?>(null)
+
+    /** Nome con cui la TV è davvero annunciata in rete (può differire da quello scelto, vedi AirPlayService). */
+    val publishedName: StateFlow<String?> = nameMutable
+
+    fun setPublishedName(value: String?) {
+        nameMutable.value = value
+    }
 
     /** PIN da mostrare a schermo mentre un dispositivo si associa; null se nessuno. */
     val pin: StateFlow<String?> = pinMutable

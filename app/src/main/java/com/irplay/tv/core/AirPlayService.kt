@@ -41,6 +41,9 @@ import android.net.nsd.NsdServiceInfo
 import android.net.wifi.WifiManager
 import android.os.IBinder
 import android.os.SystemClock
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import android.util.Log
 import java.io.ByteArrayOutputStream
 import com.irplay.tv.R
@@ -564,6 +567,11 @@ class AirPlayService : Service() {
     }
 
     private fun updateNotification(text: String) {
+        // Da Android 13 senza il permesso l'aggiornamento verrebbe scartato comunque: la notifica
+        // del servizio in primo piano resta quella iniziale, il servizio funziona lo stesso.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) return
         getSystemService(NotificationManager::class.java)?.notify(NOTIFICATION_ID, buildNotification(text))
     }
 

@@ -31,6 +31,7 @@ import android.view.inputmethod.EditorInfo
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.text.InputFilter
+import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
@@ -90,9 +91,10 @@ class MainActivity : AppCompatActivity() {
         scope.launch { ReceiverState.nowPlaying.collect { renderNowPlaying(it) } }
         scope.launch { ReceiverState.lyrics.collect { renderLyrics() } }
         // La posizione del brano arriva da iOS ogni tanto: in mezzo la si fa avanzare qui.
+        // Solo con la schermata visibile: con un'altra app in primo piano non serve ridisegnare.
         scope.launch {
             while (true) {
-                if (ReceiverState.status.value is ReceiverState.Status.Playing) {
+                if (isVisible && ReceiverState.status.value is ReceiverState.Status.Playing) {
                     renderProgress(ReceiverState.nowPlaying.value)
                     renderLyrics()
                 }
@@ -360,9 +362,14 @@ class MainActivity : AppCompatActivity() {
         }
         val pos = shownPositionMs(np, ReceiverState.elapsedNow())
         binding.npProgress.visibility = View.VISIBLE
-        binding.npProgress.progress = (pos * 1000 / np.durationMs).toInt()
-        binding.npPosition.text = formatTime(pos)
-        binding.npDuration.text = formatTime(np.durationMs)
+        binding.npProgress.progress = (pos * 1000 / np.durationMs).toInt()   // nessun lavoro se uguale
+        setIfChanged(binding.npPosition, formatTime(pos))
+        setIfChanged(binding.npDuration, formatTime(np.durationMs))
+    }
+
+    /** setText solo se il testo cambia: evita di ricalcolare l'impaginazione a ogni giro. */
+    private fun setIfChanged(view: TextView, text: String) {
+        if (view.text.toString() != text) view.text = text
     }
 
     private val lyricViews by lazy {
@@ -375,6 +382,12 @@ class MainActivity : AppCompatActivity() {
      * attimo); con il solo testo la posizione è stimata in proporzione alla durata.
      * L'album si nasconde per fare spazio.
      */
+    // Ultimo testo disegnato: si riscrivono le righe solo quando cambiano (ogni setText
+    // ricalcola l'impaginazione, e il ciclo gira 5 volte al secondo).
+    private var drawnLyrics: Lyrics.Result? = null
+    private var drawnLyricsLines: List<String> = emptyList()
+    private var drawnLyricIndex = Int.MIN_VALUE
+
     private fun renderLyrics() {
         val result = ReceiverState.lyrics.value
         val np = ReceiverState.nowPlaying.value
@@ -382,7 +395,8 @@ class MainActivity : AppCompatActivity() {
         val (lines, index) = when (result) {
             is Lyrics.Result.Synced -> {
                 val i = result.lines.indexOfLast { it.timeMs <= pos + 300 }
-                result.lines.map { it.text.ifEmpty { "♪" } } to i
+                val texts = if (result === drawnLyrics) drawnLyricsLines else result.lines.map { it.text.ifEmpty { "♪" } }
+                texts to i
             }
             is Lyrics.Result.Plain -> {
                 val i = if (np.durationMs > 0) (pos * result.lines.size / np.durationMs).toInt() else 0
@@ -392,11 +406,16 @@ class MainActivity : AppCompatActivity() {
             else -> {
                 binding.npLyrics.visibility = View.GONE
                 binding.npAlbum.visibility = View.VISIBLE
+                drawnLyrics = null
                 return
             }
         }
         binding.npLyrics.visibility = View.VISIBLE
         binding.npAlbum.visibility = View.GONE
+        if (result === drawnLyrics && index == drawnLyricIndex) return
+        drawnLyrics = result
+        drawnLyricsLines = lines
+        drawnLyricIndex = index
         for (k in 0 until 5) {
             val i = index - 2 + k
             lyricViews[k].text = if (i in lines.indices) lines[i] else ""

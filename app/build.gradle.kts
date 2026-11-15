@@ -93,10 +93,6 @@ dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.appcompat)
     implementation(libs.material)
-    implementation(libs.androidx.constraintlayout)
-
-    // Dipendenza fondamentale per Android TV: gestione telecomando D-Pad e layout Leanback
-    implementation("androidx.leanback:leanback:1.2.0")
 
     // Lettore dell'AirPlay video: ExoPlayer con HLS e i controlli di Media3 (Apache-2.0).
     implementation("androidx.media3:media3-exoplayer:1.11.1")

@@ -10,5 +10,4 @@
     <color name="status_starting">#FFFBBF24</color>
     <color name="status_error">#FFF87171</color>
     <color name="black">#FF000000</color>
-    <color name="white">#FFFFFFFF</color>
 </resources>

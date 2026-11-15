@@ -30,6 +30,7 @@
 
 #include "airplay_crypto.h"
 #include "airplay_info.h"
+#include "plist_writer.h"
 #include "session_sink.h"
 
 namespace irplay {
@@ -113,6 +114,9 @@ namespace irplay {
         bool dispatchMedia(ConnState& st, const RtspRequest& req, bool& keepOpen);
         bool handleReverse(ConnState& st, const RtspRequest& req, const std::string& sid);
         bool handlePlay(ConnState& st, const RtspRequest& req, const std::string& sid);
+        void resetMediaPlayback(MediaState state);
+        bool startMedia(ConnState& st, const RtspRequest& req, const std::string& sid,
+                        const std::string& location, double startSec, double startFraction);
         bool handleAction(ConnState& st, const RtspRequest& req, const std::string& sid);
         bool handlePlaybackInfo(ConnState& st, const RtspRequest& req);
         bool mediaAuthorized(const ConnState& st);
@@ -156,6 +160,10 @@ namespace irplay {
         std::unique_ptr<MediaSession> media_;
         int reverseFd_ = -1;              // canale inverso per FCUP ed eventi
         std::string reverseSession_;      // X-Apple-Session-ID di chi l'ha aperto
+        // Proprietà del lettore impostate da iOS con PUT /setProperty (es. selectedMediaArray,
+        // le tracce audio/sottotitoli scelte) e restituite da /getProperty. Valgono per tutta la
+        // sessione video, anche attraverso playlistInsert; azzerate da un nuovo /play.
+        std::vector<std::pair<std::string, plist::Value>> mediaProps_;
         // Scritti da Kotlin, letti da GET /playback-info: atomici, senza mutex.
         std::atomic<double> mediaPos_{0.0};
         std::atomic<double> mediaDur_{0.0};

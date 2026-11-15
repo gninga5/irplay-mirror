@@ -105,6 +105,13 @@ else an evening:
   the playlists live on the phone. The TV asks for them one by one over a reversed HTTP
   connection, expands YouTube's condensed segment URLs and feeds them to ExoPlayer straight
   from memory, so no extra port is opened on the TV.
+- On the reversed connection iOS doesn't only answer `HTTP/1.1 200 OK`: every 15 seconds or so
+  it sends an empty `EVENT/1.0 200 OK`. Treat that as an error and close the connection, and the
+  TV can no longer ask for playlists. That's what broke changing the audio track in YouTube, which
+  removes the video and inserts it again (`playlistRemove`, then `playlistInsert`). The new track
+  now plays, but the iPhone keeps showing a spinner and stops sending commands afterwards: it
+  waits for something from the receiver that I haven't been able to identify. Disconnecting and
+  reconnecting AirPlay gets the controls back, already on the new track.
 - The `0x80` bit in the mDNS `flags` record means "password required". Set it by mistake and
   iOS 27 asks for a PIN, then gives up.
 - In pause, iOS closes the audio stream and reopens it when you resume, while the session stays

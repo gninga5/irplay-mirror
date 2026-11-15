@@ -35,6 +35,7 @@
 #include <cerrno>
 #include <cmath>
 #include <cstdlib>
+#include <cctype>
 #include <cstring>
 #include <sys/socket.h>
 
@@ -83,6 +84,18 @@ namespace irplay {
             return true;
         }
 
+        constexpr size_t kMaxMediaProps = 32;
+
+        // "/getProperty?selectedMediaArray" -> "selectedMediaArray"; vuoto se non è un nome valido.
+        std::string_view propertyName(std::string_view uri) {
+            const size_t q = uri.find('?');
+            if (q == std::string_view::npos) return {};
+            const std::string_view n = uri.substr(q + 1);
+            if (n.empty() || n.size() > 64) return {};
+            for (char c : n) if (!std::isalnum(static_cast<unsigned char>(c))) return {};
+            return n;
+        }
+
         // Valore di un parametro nella query: "/scrub?position=12.5" -> "12.5".
         std::string_view queryValue(std::string_view uri, std::string_view key) {
             const size_t q = uri.find('?');
@@ -127,20 +140,24 @@ namespace irplay {
 
         // Corpo di POST /play: plist binario (iOS recenti) o testo "Content-Location: ...\n
         // Start-Position: 0.25\n" (mittenti più vecchi, posizione come frazione della durata).
+        // Dizionario di un video: corpo di /play o "item" di playlistInsert.
+        bool parsePlayDict(const plist::Dict* d, PlayRequest& out) {
+            const plist::Value* loc = d ? d->find("Content-Location") : nullptr;
+            if (!loc || !loc->asString()) return false;
+            out.location = *loc->asString();
+            if (const double* s = asDouble(d->find("Start-Position-Seconds"))) {
+                if (std::isfinite(*s) && *s >= 0 && *s < 1e7) out.startSec = *s;
+            } else if (const double* f = asDouble(d->find("Start-Position"))) {
+                if (std::isfinite(*f) && *f >= 0 && *f <= 1) out.startFraction = *f;
+            }
+            return true;
+        }
+
         bool parsePlay(const RtspRequest& req, PlayRequest& out) {
             const std::string* ct = req.header("Content-Type");
             if (ct && ct->find("binary-plist") != std::string::npos) {
                 const auto root = plist::parseBinary(req.body.data(), req.body.size());
-                const plist::Dict* d = root ? root->asDict() : nullptr;
-                const plist::Value* loc = d ? d->find("Content-Location") : nullptr;
-                if (!loc || !loc->asString()) return false;
-                out.location = *loc->asString();
-                if (const double* s = asDouble(d->find("Start-Position-Seconds"))) {
-                    if (std::isfinite(*s) && *s >= 0 && *s < 1e7) out.startSec = *s;
-                } else if (const double* f = asDouble(d->find("Start-Position"))) {
-                    if (std::isfinite(*f) && *f >= 0 && *f <= 1) out.startFraction = *f;
-                }
-                return true;
+                return parsePlayDict(root ? root->asDict() : nullptr, out);
             }
             const std::string_view text(reinterpret_cast<const char*>(req.body.data()), req.body.size());
             size_t pos = 0;
@@ -275,6 +292,17 @@ namespace irplay {
                 keepOpen = sendResponse(fd, &req, 400, "Bad Request");
                 return true;
             }
+            {
+                // Playlist ancora in arrivo (playlistInsert seguito da /scrub): la posizione
+                // diventa il punto di partenza del video, il lettore non è ancora aperto.
+                std::lock_guard<std::mutex> lock(mediaMutex_);
+                if (media_ && media_->fetching && (sid.empty() || media_->sessionId == sid)) {
+                    media_->startSec = position;
+                    media_->startFraction = -1;
+                    keepOpen = sendResponse(fd, &req, 200, "OK");
+                    return true;
+                }
+            }
             sink_->onMediaScrub(position);
             keepOpen = sendResponse(fd, &req, 200, "OK");
             return true;
@@ -297,10 +325,28 @@ namespace irplay {
             return true;
         }
         if (path == "/setProperty" || path == "/getProperty") {
-            // Proprietà del lettore (lingua dei sottotitoli, fine dell'elemento ...): ExoPlayer
-            // sceglie da sé le tracce, si risponde "nessun errore" come fa UxPlay.
+            // Proprietà del lettore (tracce scelte, fine dell'elemento ...). ExoPlayer sceglie
+            // da sé le tracce, ma iOS deve ritrovare i valori che ha impostato: dopo un cambio di
+            // traccia (playlistInsert) chiede getProperty?selectedMediaArray e, senza "value",
+            // resta in caricamento e smette di chiedere lo stato.
             plist::Dict r;
             r.set("errorCode", 0);
+            const std::string_view name = propertyName(req.uri);
+            if (!name.empty()) {
+                std::lock_guard<std::mutex> lock(mediaMutex_);
+                auto it = std::find_if(mediaProps_.begin(), mediaProps_.end(), [&](const auto& kv) { return kv.first == name; });
+                if (path == "/setProperty") {
+                    const auto root = plist::parseBinary(req.body.data(), req.body.size());
+                    const plist::Dict* d = root ? root->asDict() : nullptr;
+                    const plist::Value* v = d ? d->find("value") : nullptr;
+                    if (v) {
+                        if (it != mediaProps_.end()) it->second = *v;
+                        else if (mediaProps_.size() < kMaxMediaProps) mediaProps_.emplace_back(std::string(name), *v);
+                    }
+                } else if (it != mediaProps_.end()) {
+                    r.set("value", it->second);
+                }
+            }
             keepOpen = sendResponse(fd, &req, 200, "OK", {{"Content-Type", kXmlPlist}}, xmlBody(r));
             return true;
         }
@@ -372,6 +418,15 @@ namespace irplay {
         }
     }
 
+    // Nuovo elemento o elemento tolto: iOS non deve vedere posizione e durata del precedente
+    // insieme a "non pronto" (dopo un playlistInsert smette di chiedere lo stato).
+    void AirPlayServer::resetMediaPlayback(MediaState state) {
+        mediaPos_ = 0.0;
+        mediaDur_ = 0.0;
+        mediaRate_ = 0.0f;
+        mediaState_ = static_cast<int>(state);
+    }
+
     // =============================================================== /play e /action
 
     bool AirPlayServer::handlePlay(ConnState& st, const RtspRequest& req, const std::string& sid) {
@@ -382,6 +437,25 @@ namespace irplay {
             sendResponse(fd, &req, 400, "Bad Request");
             return false;
         }
+        {
+            std::lock_guard<std::mutex> lock(mediaMutex_);
+            mediaProps_.clear();   // nuovo video: le proprietà del precedente non valgono più
+        }
+        return startMedia(st, req, sid, play.location, play.startSec, play.startFraction);
+    }
+
+    /*
+     * Avvio di un video: da POST /play o da /action playlistInsert (YouTube lo usa per cambiare
+     * traccia audio: playlistRemove del video attuale, playlistInsert dello stesso video con la
+     * nuova lingua e subito dopo /scrub alla posizione raggiunta).
+     */
+    bool AirPlayServer::startMedia(ConnState& st, const RtspRequest& req, const std::string& sid,
+                                   const std::string& location, double startSec, double startFraction) {
+        const int fd = st.fd;
+        PlayRequest play;
+        play.location = location;
+        play.startSec = startSec;
+        play.startFraction = startFraction;
 
         // Duplicazione in corso da un altro dispositivo: la TV ha un solo schermo.
         // Stesso dispositivo = stesso indirizzo oppure stessa chiave autenticata: iOS può aprire
@@ -408,7 +482,7 @@ namespace irplay {
                 media_->lastSeenMs = monotonicMs();
             }
             LOGI("Video AirPlay: indirizzo diretto");
-            mediaState_ = static_cast<int>(MediaState::Loading);
+            resetMediaPlayback(MediaState::Loading);
             sink_->onMediaPlay(play.location, play.startSec, play.startFraction, {});
             return sendResponse(fd, &req, 200, "OK");
         }
@@ -444,7 +518,7 @@ namespace irplay {
             return sendResponse(fd, &req, 500, "Internal Server Error");
         }
         LOGI("Video AirPlay HLS: chiedo le playlist all'iPhone");
-        mediaState_ = static_cast<int>(MediaState::Loading);
+        resetMediaPlayback(MediaState::Loading);
         return sendResponse(fd, &req, 200, "OK");
     }
 
@@ -471,13 +545,21 @@ namespace irplay {
                 }
             }
             if (stop) {
-                mediaState_ = static_cast<int>(MediaState::Idle);
+                resetMediaPlayback(MediaState::Idle);
                 sink_->onMediaStop();
             }
             return sendResponse(fd, &req, 200, "OK");
         }
+        if (*type == "playlistInsert") {
+            const plist::Value* itemV = params->find("item");
+            PlayRequest play;
+            if (!parsePlayDict(itemV ? itemV->asDict() : nullptr, play)) {
+                return sendResponse(fd, &req, 400, "Bad Request");
+            }
+            return startMedia(st, req, sid, play.location, play.startSec, play.startFraction);
+        }
         if (*type != "unhandledURLResponse") {
-            return sendResponse(fd, &req, 200, "OK");   // playlistInsert e altri: nessun effetto
+            return sendResponse(fd, &req, 200, "OK");   // altri tipi: nessun effetto
         }
 
         const plist::Value* urlV = params->find("FCUP_Response_URL");
@@ -622,9 +704,8 @@ namespace irplay {
         {
             std::lock_guard<std::mutex> lock(mediaMutex_);
             if (closing && closing->reverse && reverseFd_ == closing->fd) {
-                // Canale inverso chiuso dall'iPhone. iOS lo chiude da sé una quindicina di secondi
-                // dopo l'avvio, a video in corso: conta solo se servono ancora playlist (FCUP).
-                // Un telefono sparito a video avviato lo ferma il watchdog su /playback-info.
+                // Canale inverso chiuso. Conta solo se servono ancora playlist (FCUP): a video
+                // avviato si continua, e un telefono sparito lo ferma il watchdog su /playback-info.
                 reverseFd_ = -1;
                 reverseSession_.clear();
                 if (media_ && media_->fetching) {

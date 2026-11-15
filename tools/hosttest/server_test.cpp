@@ -748,6 +748,45 @@ static void testMedia(const ReceiverInfo& info, const uint8_t seed[32]) {
     server.updateMediaPlayback(6.0, 100.0, 0.0f, AirPlayServer::MediaState::Paused);
     { std::string head, body; CHECK(readHttp(rev, head, body) && xmlString(body, "state") == "paused"); }
 
+    // iOS risponde ad alcuni eventi con "EVENT/1.0 200 OK": il canale inverso deve restare aperto
+    { const char* ev = "EVENT/1.0 200 OK\r\nContent-Length: 0\r\n\r\n"; send(rev, ev, strlen(ev), 0); }
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    // cambio di traccia audio (YouTube): playlistRemove, playlistInsert, /scrub, nuove playlist
+    {
+        auto act = [&](const char* type, plist::Dict params) {
+            Bytes b = *plist::toBinary(plist::Dict().set("type", type).set("params", std::move(params)));
+            return rtsp(cmd, "POST", "/action", b, H + bp, HTTP).code;
+        };
+        // proprietà impostate da iOS: restituite da getProperty, anche dopo playlistInsert
+        const Bytes sel = *plist::toBinary(plist::Dict().set("value",
+            plist::Array{plist::Dict().set("MediaSelectionOptionsName", "Italiano").set("MediaSelectionOptionsUnicodeLanguageIdentifier", "it")}));
+        CHECK(rtsp(cmd, "PUT", "/setProperty?selectedMediaArray", sel, H + bp, HTTP).code == 200);
+        CHECK(rtsp(cmd, "PUT", "/setProperty?../../x", sel, H + bp, HTTP).code == 200);   // nome non valido: ignorato
+        CHECK(act("playlistRemove", plist::Dict().set("item", plist::Dict().set("uuid", "A"))) == 200 && sink->waitFor("mstop"));
+        CHECK(act("playlistInsert", plist::Dict().set("item", plist::Dict().set("uuid", "B")
+                                                     .set("Content-Location", "file:///etc/passwd"))) == 400);
+        CHECK(act("playlistInsert", plist::Dict().set("item", plist::Dict().set("uuid", "52F668A9-95E4-43A1-9AE5-38C67B2BF41C")
+                                                     .set("Content-Location", "mlhls://localhost/master.m3u8"))) == 200);
+        CHECK(rtsp(cmd, "POST", "/scrub?position=169.25", {}, H, HTTP).code == 200);
+        CHECK(!sink->waitFor("mscrub", nullptr, 100));   // nessun lettore aperto: diventa la partenza
+        for (int i = 0; i < 3; ++i) {
+            std::string head, body;
+            CHECK(readHttp(rev, head, body));
+            const std::string url = xmlString(body, "FCUP_Response_URL");
+            CHECK(!url.empty());   // nessun altro messaggio prima delle richieste di playlist
+            const char* ok = "EVENT/1.0 200 OK\r\nContent-Length: 0\r\n\r\n"; send(rev, ok, strlen(ok), 0);
+            answer(url, bodies[i], 200);
+        }
+        CHECK(sink->waitFor("mplay", &e) && std::string(e.a.begin(), e.a.end()) == "irplay-hls://local/master.m3u8" && e.f == 169.25f);
+        r = rtsp(cmd, "POST", "/getProperty?selectedMediaArray", {}, H, HTTP);
+        { const std::string x(r.body.begin(), r.body.end());
+          CHECK(r.code == 200 && x.find("<key>value</key><array>") != std::string::npos && x.find("<string>Italiano</string>") != std::string::npos); }
+        r = rtsp(cmd, "POST", "/getProperty?playbackAccessLog", {}, H, HTTP);
+        { const std::string x(r.body.begin(), r.body.end());
+          CHECK(r.code == 200 && x.find("<key>errorCode</key>") != std::string::npos && x.find("<key>value</key>") == std::string::npos); }
+    }
+
     // indirizzi diretti: solo http/https
     for (const char* bad : {"file:///data/data/com.irplay.tv/shared_prefs/x.xml", "content://media/1", "javascript:1"})
         CHECK(rtsp(cmd, "POST", "/play", playBody(bad, 0), H + bp, HTTP).code == 400);
@@ -762,7 +801,7 @@ static void testMedia(const ReceiverInfo& info, const uint8_t seed[32]) {
     server.stopMedia();
     { std::string head, body; CHECK(readHttp(rev, head, body) && xmlString(body, "state") == "stopped"); }
 
-    // chiusura del canale inverso con un video avviato: iOS lo fa da sé, il lettore continua
+    // chiusura del canale inverso con un video avviato: il lettore continua
     CHECK(rtsp(cmd, "POST", "/play", playBody("https://example.com/v.m3u8", 0), H + bp, HTTP).code == 200 && sink->waitFor("mplay"));
     close(rev);
     CHECK(!sink->waitFor("mstop", nullptr, 1500));

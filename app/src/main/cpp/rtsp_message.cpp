@@ -4,6 +4,8 @@
  */
 #include "rtsp_message.h"
 
+#include <cctype>
+
 #include <cerrno>
 #include <chrono>
 #include <cstring>
@@ -126,11 +128,27 @@ namespace irplay {
             return 1;
         }
 
+        namespace {
+            bool isStatusLine(std::string_view head) {
+                size_t i = 0;
+                while (i < head.size() && i < 16 && head[i] >= 'A' && head[i] <= 'Z') ++i;
+                if (i == 0 || i + 9 > head.size() || head[i] != '/') return false;
+                const std::string_view rest = head.substr(i + 1);
+                // "1.1 200"
+                return rest.size() >= 7 && std::isdigit(static_cast<unsigned char>(rest[0])) && rest[1] == '.' &&
+                       std::isdigit(static_cast<unsigned char>(rest[2])) && rest[3] == ' ' &&
+                       std::isdigit(static_cast<unsigned char>(rest[4])) && std::isdigit(static_cast<unsigned char>(rest[5])) &&
+                       std::isdigit(static_cast<unsigned char>(rest[6]));
+            }
+        }
+
         int discardResponse(std::vector<uint8_t>& buf) {
             const std::string_view view(reinterpret_cast<const char*>(buf.data()), buf.size());
             const size_t end = view.find("\r\n\r\n");
             if (end == std::string_view::npos) return buf.size() > kMaxHeaderBytes ? -1 : 0;
-            if (end > kMaxHeaderBytes || view.substr(0, 9) != "HTTP/1.1 ") return -1;
+            // Riga di stato "NOME/x.y codice ...": iOS risponde agli eventi con HTTP/1.1, ma
+            // ad alcuni con EVENT/1.0 (visto con l'app YouTube dopo ~13 s di video).
+            if (end > kMaxHeaderBytes || !isStatusLine(view.substr(0, end))) return -1;
 
             // Le risposte di iOS a /event non hanno corpo, ma un Content-Length va rispettato
             // per non interpretare il corpo come l'inizio della risposta successiva.

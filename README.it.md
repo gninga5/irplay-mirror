@@ -110,6 +110,13 @@ altro risparmiano una serata.
   le playlist stanno sul telefono. La TV le chiede una alla volta su una connessione HTTP
   "rovesciata", espande gli indirizzi abbreviati dei segmenti di YouTube e le passa a ExoPlayer
   direttamente dalla memoria, senza aprire altre porte sulla TV.
+- Sulla connessione "rovesciata" iOS non risponde solo `HTTP/1.1 200 OK`: ogni 15 secondi circa
+  manda un `EVENT/1.0 200 OK` vuoto. Se lo tratti come un errore e chiudi la connessione, la TV non
+  può più chiedere le playlist. È questo che bloccava il cambio di traccia audio in YouTube, che
+  toglie il video e lo reinserisce (`playlistRemove`, poi `playlistInsert`). Ora la nuova traccia
+  parte, ma dopo l'iPhone resta con la rotellina e non manda più comandi: aspetta qualcosa dal
+  ricevitore che non sono ancora riuscito a capire. Scollegare e ricollegare AirPlay restituisce
+  i comandi, già sulla nuova traccia.
 - Il bit `0x80` nel campo `flags` dell'annuncio mDNS significa "password richiesta". Se lo metti
   per sbaglio, iOS 27 chiede un PIN e poi rinuncia.
 - In pausa iOS chiude il flusso audio e lo riapre alla ripresa, mentre la sessione resta aperta.

@@ -521,7 +521,18 @@ static void testMusic(const ReceiverInfo& info, const uint8_t seed[32], const ui
     // 6) fuzzing del decoder ALAC (stessa configurazione dell'app): nessun crash con dati alterati
     ALACDecoder dec; uint8_t cookie[24] = {0,0,1,0x60, 0, 16, 40, 10, 14, 2, 0, 255, 0,0,0,0, 0,0,0,0, 0,0,0xAC,0x44};
     CHECK(dec.Init(cookie, 24) == 0);
+    // la configurazione big-endian deve essere letta correttamente (difetto di EndianPortable su ARM)
+    CHECK(dec.mConfig.frameLength == 352 && dec.mConfig.sampleRate == 44100 && dec.mConfig.maxRun == 255);
     Bytes outb(4096 * 2 * 4);
+    // pacchetto con "partialFrame" che dichiara 1000 campioni (> 352): va rifiutato
+    {
+        Bytes bad(64 + 16 * 1024, 0); size_t bit = 0;
+        auto put = [&](uint32_t v, int n) { for (int i = n - 1; i >= 0; --i, ++bit) if ((v >> i) & 1) bad[bit / 8] |= (uint8_t) (0x80 >> (bit % 8)); };
+        put(0, 3); put(0, 4); put(0, 12); put(8, 4); put(1000, 32);   // SCE, tag 0, header 0, partialFrame
+        BitBuffer bb; BitBufferInit(&bb, bad.data(), 64);
+        uint32_t ns = 0;
+        CHECK(dec.Decode(&bb, outb.data(), 352, 2, &ns) != 0);
+    }
     for (int it = 0; it < 200000; ++it) {
         Bytes m = pkts[rng() % pkts.size()];
         for (int k = 0, n = 1 + rng() % 4; k < n; ++k) m[rng() % m.size()] = (uint8_t) rng();

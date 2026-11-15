@@ -40,6 +40,11 @@
 #define TARGET_RT_LITTLE_ENDIAN 1
 #elif defined (TARGET_OS_WIN32)
 #define TARGET_RT_LITTLE_ENDIAN 1
+#elif defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+/* iRPlay: l'originale riconosce come little-endian solo x86 e Windows. Su ARM (tutte le TV,
+   Apple Silicon) i valori big-endian della configurazione non venivano convertiti:
+   frameLength 352 diventava 0x60010000. */
+#define TARGET_RT_LITTLE_ENDIAN 1
 #endif
 
 uint16_t Swap16NtoB(uint16_t inUInt16)

@@ -58,6 +58,34 @@
                     android:text="@string/tagline" />
             </LinearLayout>
 
+            <!-- Licenze: pillola selezionabile accanto allo stato, così i riquadri in basso hanno più spazio. -->
+            <LinearLayout
+                android:id="@+id/licenses_button"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginEnd="12dp"
+                android:background="@drawable/bg_focusable_pill"
+                android:clickable="true"
+                android:focusable="true"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:paddingHorizontal="16dp"
+                android:paddingVertical="8dp">
+
+                <ImageView
+                    style="@style/iRPlay.RowIcon"
+                    android:layout_width="20dp"
+                    android:layout_height="20dp"
+                    android:src="@drawable/ic_licenses" />
+
+                <TextView
+                    style="@style/iRPlay.Body"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:text="@string/licenses_button" />
+            </LinearLayout>
+
             <LinearLayout
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
@@ -458,30 +486,6 @@
                 </LinearLayout>
             </LinearLayout>
 
-            <LinearLayout
-                android:id="@+id/licenses_button"
-                android:layout_width="wrap_content"
-                android:layout_height="match_parent"
-                android:layout_marginStart="16dp"
-                android:background="@drawable/bg_focusable"
-                android:clickable="true"
-                android:focusable="true"
-                android:gravity="center"
-                android:orientation="vertical"
-                android:paddingHorizontal="24dp">
-
-                <ImageView
-                    style="@style/iRPlay.TileIcon"
-                    android:src="@drawable/ic_licenses" />
-
-                <TextView
-                    style="@style/iRPlay.Heading"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="4dp"
-                    android:text="@string/licenses_button"
-                    android:textSize="15sp" />
-            </LinearLayout>
         </LinearLayout>
     </LinearLayout>
     <!-- In riproduzione: la TV fa da altoparlante (musica, podcast). Nessun elemento

@@ -57,7 +57,7 @@ and sideload it. The easiest way is adb:
 1. On the TV: Settings → System → About, press OK seven times on *Android TV OS build* to unlock
    developer options, then turn on USB debugging (and network debugging if your TV has it).
 2. From a computer on the same network: `adb connect <tv-ip>:5555` and accept the prompt on the TV.
-3. `adb install iRPlay-Mirror-1.1.0.apk`
+3. `adb install iRPlay-Mirror-1.2.0.apk`
 
 Needs Android TV / Google TV 10 or newer on an ARM chip (pretty much every TV and stick out
 there).

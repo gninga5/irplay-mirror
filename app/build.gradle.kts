@@ -13,8 +13,8 @@ android {
         // Min SDK 29: garantisce supporto completo da Android 10 in poi (inclusa la TCL 43P639)
         minSdk = 29
         targetSdk = 34
-        versionCode = 2
-        versionName = "1.1.0"
+        versionCode = 3
+        versionName = "1.2.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

@@ -3,16 +3,18 @@
  * Scopo: testi delle canzoni per la schermata "In riproduzione".
  *
  * AirPlay non trasmette i testi (iOS invia solo titolo, artista, album, copertina e
- * avanzamento), quindi li si cerca su LRCLIB (https://lrclib.net), un archivio aperto e
- * gratuito che offre anche testi sincronizzati in formato LRC ("[mm:ss.cc] riga").
+ * avanzamento), quindi li si cerca online, in quest'ordine, fermandosi al primo che risponde:
+ *  1. lrcmux.dev  - aggregatore (Deezer, KuGou, YouTube Music); testi sincronizzati riga per riga
+ *  2. Karalyr     - archivio aperto di testi sincronizzati parola per parola (API stile LRCLIB)
+ *  3. lyrics.ovh  - solo testo, senza tempi
  *
- * Privacy: è l'unica funzione dell'app che contatta un servizio esterno. È disattivata di
- * default (AppSettings.lyricsEnabled) e invia soltanto titolo, artista, album e durata del brano,
- * nessun dato del dispositivo o dell'utente.
+ * Privacy: è l'unica funzione dell'app che contatta servizi esterni; invia soltanto titolo,
+ * artista, album e durata del brano, nessun dato del dispositivo o dell'utente. È indicato nella
+ * schermata Licenze e si può disattivare dalla home.
  *
- * Sicurezza: solo HTTPS verso un host fisso, timeout brevi, risposta letta fino a 512 KB,
- * testo ripulito da caratteri di controllo e limitato in righe e lunghezza prima di arrivare
- * alla UI.
+ * Sicurezza: solo HTTPS verso tre host fissi, nessun redirect, timeout brevi, risposta letta fino
+ * a 512 KB, testo ripulito da caratteri di controllo e limitato in righe e lunghezza prima di
+ * arrivare alla UI.
  */
 package com.irplay.tv.core
 
@@ -22,7 +24,6 @@ import java.io.ByteArrayOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import javax.net.ssl.HttpsURLConnection
-import org.json.JSONArray
 import org.json.JSONObject
 
 object Lyrics {
@@ -39,66 +40,130 @@ object Lyrics {
     data class Line(val timeMs: Long, val text: String)
 
     private const val TAG = "iRPlay_Lyrics"
-    private const val HOST = "lrclib.net"
+    private const val HOST_LRCMUX = "api.lrcmux.dev"
+    private const val HOST_KARALYR = "www.karalyr.com"
+    private const val HOST_LYRICS_OVH = "api.lyrics.ovh"
     private const val USER_AGENT = "iRPlay-Mirror/1.1 (https://github.com/gninga5/irplay-mirror)"
     private const val MAX_BYTES = 512 * 1024
     private const val MAX_LINES = 400
     private const val MAX_LINE_CHARS = 160
-    private const val DURATION_TOLERANCE_S = 3.0
+
+    /** Esito di una richiesta: testo trovato, assente (si passa al servizio successivo) o errore. */
+    private sealed interface Outcome {
+        data class Found(val result: Result) : Outcome
+        data object Missing : Outcome
+        data object Failed : Outcome
+    }
 
     // Cache dei brani già cercati: in pausa/ripresa e cambi di brano rapidi non si ripete la richiesta.
     private val cache = object : LinkedHashMap<String, Result>(32, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Result>?) = size > 32
     }
 
-    /** Da chiamare fuori dal main thread. Non lancia eccezioni: in caso di errore restituisce NotFound. */
+    /** Da chiamare fuori dal main thread. Non lancia eccezioni. */
     fun fetch(title: String, artist: String, album: String, durationMs: Long): Result {
         if (title.isBlank() || artist.isBlank()) return Result.NotFound
         val key = "$artist\u0000$title\u0000$album\u0000${durationMs / 2000}"
         synchronized(cache) { cache[key]?.let { return it } }
-        val result = try {
-            lookup(title, artist, album, durationMs)
-        } catch (e: Exception) {
-            Log.w(TAG, "Ricerca del testo non riuscita: ${e.javaClass.simpleName}")
-            return Result.NotFound   // errore di rete: non si salva in cache, si riproverà
+
+        var anyFailed = false
+        val providers = listOf(
+            { fromLrcmux(title, artist, album, durationMs) },
+            { fromKaralyr(title, artist, album, durationMs) },
+            { fromLyricsOvh(title, artist) },
+        )
+        for (provider in providers) {
+            when (val o = safely(provider)) {
+                is Outcome.Found -> {
+                    synchronized(cache) { cache[key] = o.result }
+                    return o.result
+                }
+                Outcome.Missing -> Unit
+                Outcome.Failed -> anyFailed = true
+            }
         }
-        synchronized(cache) { cache[key] = result }
-        return result
+        // "Non trovato" si ricorda solo se tutti hanno risposto: dopo un errore di rete si riproverà.
+        if (!anyFailed) synchronized(cache) { cache[key] = Result.NotFound }
+        return Result.NotFound
     }
 
-    private fun lookup(title: String, artist: String, album: String, durationMs: Long): Result {
-        // 1) corrispondenza esatta (con la durata, LRCLIB distingue le versioni dello stesso brano)
-        val get = Uri.Builder().scheme("https").authority(HOST).path("/api/get")
+    private inline fun safely(provider: () -> Outcome): Outcome = try {
+        provider()
+    } catch (e: Exception) {
+        Log.w(TAG, "Servizio testi non disponibile: ${e.javaClass.simpleName}")
+        Outcome.Failed
+    }
+
+    /** lrcmux: prima il testo sincronizzato (LRC); se esiste solo quello semplice risponde 400 e lo si chiede in txt. */
+    private fun fromLrcmux(title: String, artist: String, album: String, durationMs: Long): Outcome {
+        fun uri(format: String) = Uri.Builder().scheme("https").authority(HOST_LRCMUX).path("/get")
+            .appendQueryParameter("artist", artist)
+            .appendQueryParameter("title", title)
+            .apply {
+                if (album.isNotBlank()) appendQueryParameter("album", album)
+                if (durationMs > 0) appendQueryParameter("duration", (durationMs / 1000).toString())
+            }
+            .appendQueryParameter("level", "line")
+            .appendQueryParameter("format", format)
+            .build()
+        val lrc = request(uri("lrc"), acceptBadRequest = true)
+        when {
+            lrc == null -> return Outcome.Missing
+            lrc != BAD_REQUEST -> {
+                val lines = parseLrc(lrc)
+                return if (lines.isNotEmpty()) Outcome.Found(Result.Synced(lines)) else Outcome.Missing
+            }
+        }
+        val txt = request(uri("txt")) ?: return Outcome.Missing
+        return plain(txt)
+    }
+
+    /** Karalyr: risposta nel formato di LRCLIB; i tempi parola per parola vengono rimossi da parseLrc. */
+    private fun fromKaralyr(title: String, artist: String, album: String, durationMs: Long): Outcome {
+        val uri = Uri.Builder().scheme("https").authority(HOST_KARALYR).path("/api/get")
             .appendQueryParameter("track_name", title)
             .appendQueryParameter("artist_name", artist)
             .apply {
                 if (album.isNotBlank()) appendQueryParameter("album_name", album)
                 if (durationMs > 0) appendQueryParameter("duration", (durationMs / 1000).toString())
             }.build()
-        request(get)?.let { body -> return parse(JSONObject(body)) }
-
-        // 2) ricerca per titolo e artista, preferendo un risultato con durata compatibile
-        val search = Uri.Builder().scheme("https").authority(HOST).path("/api/search")
-            .appendQueryParameter("track_name", title)
-            .appendQueryParameter("artist_name", artist)
-            .build()
-        val body = request(search) ?: return Result.NotFound
-        val items = JSONArray(body)
-        var best: JSONObject? = null
-        for (i in 0 until minOf(items.length(), 20)) {
-            val item = items.optJSONObject(i) ?: continue
-            val durationOk = durationMs <= 0 ||
-                kotlin.math.abs(item.optDouble("duration", 0.0) - durationMs / 1000.0) <= DURATION_TOLERANCE_S
-            if (!durationOk) continue
-            if (best == null || (!best.has("syncedLyrics") || best.isNull("syncedLyrics")) && !item.isNull("syncedLyrics")) {
-                best = item
-            }
+        val body = request(uri) ?: return Outcome.Missing
+        val o = JSONObject(body)
+        if (o.optBoolean("instrumental", false)) return Outcome.Found(Result.Instrumental)
+        if (!o.isNull("syncedLyrics")) {
+            val lines = parseLrc(o.optString("syncedLyrics"))
+            if (lines.isNotEmpty()) return Outcome.Found(Result.Synced(lines))
         }
-        return best?.let(::parse) ?: Result.NotFound
+        return if (o.isNull("plainLyrics")) Outcome.Missing else plain(o.optString("plainLyrics"))
     }
 
-    /** GET HTTPS; null se la risorsa non esiste (404). */
-    private fun request(uri: Uri): String? {
+    /** lyrics.ovh: solo testo. L'artista e il titolo sono segmenti del percorso (codificati da Uri). */
+    private fun fromLyricsOvh(title: String, artist: String): Outcome {
+        val uri = Uri.Builder().scheme("https").authority(HOST_LYRICS_OVH)
+            .appendPath("v1").appendPath(artist).appendPath(title).build()
+        val body = request(uri) ?: return Outcome.Missing
+        val o = JSONObject(body)
+        if (o.isNull("lyrics")) return Outcome.Missing
+        // A volte la prima riga è un'intestazione del sito ("Paroles de la chanson ... par ...").
+        val text = o.optString("lyrics").lineSequence()
+            .dropWhile { it.isBlank() || it.startsWith("Paroles de la chanson") }
+            .joinToString("\n")
+        return plain(text)
+    }
+
+    private fun plain(text: String): Outcome {
+        val lines = text.lineSequence().map(::clean).take(MAX_LINES).toList()
+            .dropWhile { it.isEmpty() }.dropLastWhile { it.isEmpty() }
+        return if (lines.isNotEmpty()) Outcome.Found(Result.Plain(lines)) else Outcome.Missing
+    }
+
+    private const val BAD_REQUEST = "\u0000400"
+
+    /**
+     * GET HTTPS; null se la risorsa non esiste (404). Con acceptBadRequest un 400 restituisce
+     * BAD_REQUEST invece di un errore (lrcmux lo usa per "c'è solo il testo semplice").
+     */
+    private fun request(uri: Uri, acceptBadRequest: Boolean = false): String? {
         val conn = URL(uri.toString()).openConnection() as HttpsURLConnection
         try {
             conn.connectTimeout = 4000
@@ -109,6 +174,8 @@ object Lyrics {
             when (conn.responseCode) {
                 HttpURLConnection.HTTP_OK -> Unit
                 HttpURLConnection.HTTP_NOT_FOUND -> return null
+                HttpURLConnection.HTTP_BAD_REQUEST -> if (acceptBadRequest) return BAD_REQUEST else
+                    throw IllegalStateException("HTTP 400")
                 else -> throw IllegalStateException("HTTP ${conn.responseCode}")
             }
             conn.inputStream.use { input ->
@@ -127,21 +194,10 @@ object Lyrics {
         }
     }
 
-    private fun parse(o: JSONObject): Result {
-        if (o.optBoolean("instrumental", false)) return Result.Instrumental
-        if (!o.isNull("syncedLyrics")) {
-            val lines = parseLrc(o.optString("syncedLyrics"))
-            if (lines.isNotEmpty()) return Result.Synced(lines)
-        }
-        if (!o.isNull("plainLyrics")) {
-            val lines = o.optString("plainLyrics").lineSequence().map(::clean).take(MAX_LINES).toList()
-            if (lines.any { it.isNotEmpty() }) return Result.Plain(lines)
-        }
-        return Result.NotFound
-    }
-
     // "[01:23.45] testo" (anche più tempi sulla stessa riga: "[00:10.00][01:10.00] ritornello")
     private val tag = Regex("""^\[(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?]""")
+    // LRC esteso (Karalyr, Deezer): "<00:01.74>" prima di ogni parola; qui interessano solo le righe.
+    private val wordTag = Regex("""<\d{1,3}:\d{2}(?:[.:]\d{1,3})?>""")
 
     internal fun parseLrc(lrc: String): List<Line> {
         val out = ArrayList<Line>()
@@ -157,7 +213,7 @@ object Lyrics {
                 times += (min * 60 + sec) * 1000 + ms
                 rest = rest.substring(m.range.last + 1)
             }
-            val text = clean(rest)
+            val text = clean(rest.replace(wordTag, "").replace(Regex("\\s{2,}"), " "))
             for (t in times) out += Line(t, text)
             if (out.size >= MAX_LINES) break
         }

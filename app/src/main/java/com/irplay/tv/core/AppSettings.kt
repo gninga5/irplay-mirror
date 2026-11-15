@@ -48,18 +48,22 @@ object AppSettings {
     fun hasCustomName(context: Context): Boolean = prefs(context).contains(KEY_TV_NAME)
 
     /**
-     * Testi delle canzoni da lrclib.net. Disattivati di default: è l'unica funzione che manda
-     * dati (titolo e artista del brano) a un servizio esterno, quindi la sceglie l'utente.
+     * Testi delle canzoni (vedi Lyrics.kt). Attivati di default; è l'unica funzione che manda
+     * dati a servizi esterni (titolo, artista, album e durata del brano), come indicato nella
+     * schermata Licenze, e si può disattivare dalla home.
      */
-    fun lyricsEnabled(context: Context): Boolean = prefs(context).getBoolean(KEY_LYRICS, false)
+    fun lyricsEnabled(context: Context): Boolean = prefs(context).getBoolean(KEY_LYRICS, true)
 
     fun setLyricsEnabled(context: Context, enabled: Boolean) {
         prefs(context).edit().putBoolean(KEY_LYRICS, enabled).apply()
     }
 
-    /** Richiesta del PIN. Disattivata di default: chi la vuole la attiva dalla home. */
+    /**
+     * Richiesta del PIN. Di default "solo la prima volta": ogni nuovo dispositivo deve dimostrare
+     * di vedere lo schermo della TV, poi viene ricordato e non lo chiede più.
+     */
     fun pinMode(context: Context): Int =
-        prefs(context).getInt(KEY_PIN_MODE, PIN_OFF).takeIf { it in PIN_OFF..PIN_ALWAYS } ?: PIN_OFF
+        prefs(context).getInt(KEY_PIN_MODE, PIN_FIRST_TIME).takeIf { it in PIN_OFF..PIN_ALWAYS } ?: PIN_FIRST_TIME
 
     fun setPinMode(context: Context, mode: Int) {
         if (mode !in PIN_OFF..PIN_ALWAYS) return

@@ -47,5 +47,15 @@ Librerie AndroidX, Material Components, Kotlin e kotlinx.coroutines
   Licenza: Apache License 2.0.
 
 ========================================================================================
+TESTI DELLE CANZONI
+========================================================================================
+
+Durante la musica iRPlay Mirror cerca il testo del brano online, perché AirPlay non lo
+trasmette. Vengono inviati solo titolo, artista, album e durata del brano, a questi servizi
+e in quest'ordine: lrcmux.dev (https://lrcmux.dev), Karalyr (https://www.karalyr.com) e
+lyrics.ovh (https://lyrics.ovh). I testi appartengono ai rispettivi aventi diritto.
+Si può disattivare dalla home ("Testi delle canzoni").
+
+========================================================================================
 GNU GENERAL PUBLIC LICENSE, VERSIONE 3
 ========================================================================================

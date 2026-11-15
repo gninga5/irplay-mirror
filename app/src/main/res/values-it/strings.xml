@@ -68,9 +68,9 @@
     <string name="np_source">Da %1$s · premi INDIETRO per interrompere</string>
     <string name="np_artwork_description">Copertina dell\'album</string>
     <string name="lyrics_title">Testi delle canzoni</string>
-    <string name="lyrics_on">Attivati (lrclib.net)</string>
+    <string name="lyrics_on">Attivati</string>
     <string name="lyrics_off">Disattivati</string>
-    <string name="lyrics_enabled_toast">Titolo e artista del brano verranno cercati su lrclib.net per mostrare il testo.</string>
+    <string name="lyrics_enabled_toast">Titolo e artista del brano verranno cercati online per mostrare il testo (vedi Licenze).</string>
     <string name="lyrics_instrumental">Brano strumentale</string>
     <string name="licenses_button">Licenze</string>
     <string name="licenses_title">Licenze</string>

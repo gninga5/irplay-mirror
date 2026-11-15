@@ -71,9 +71,9 @@
     <string name="np_source">From %1$s · press BACK to stop</string>
     <string name="np_artwork_description">Album artwork</string>
     <string name="lyrics_title">Song lyrics</string>
-    <string name="lyrics_on">On (lrclib.net)</string>
+    <string name="lyrics_on">On</string>
     <string name="lyrics_off">Off</string>
-    <string name="lyrics_enabled_toast">Song title and artist will be looked up on lrclib.net to show the lyrics.</string>
+    <string name="lyrics_enabled_toast">Song title and artist will be looked up online to show the lyrics (see Licenses).</string>
     <string name="lyrics_instrumental">Instrumental</string>
     <string name="licenses_button">Licenses</string>
     <string name="licenses_title">Licenses</string>

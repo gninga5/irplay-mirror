@@ -19,7 +19,7 @@ set -euo pipefail
 VERSION=9.0.2
 SHA256=8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e
 NDK_VERSION=28.2.13676358
-API=29
+API=28
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 WORK=${FFMPEG_WORK:-$ROOT/build/ffmpeg}

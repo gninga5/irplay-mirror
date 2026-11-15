@@ -73,10 +73,12 @@ e installalo a mano. Con adb ci vuole un minuto:
    (e il debug di rete, se la tua TV lo ha).
 2. Da un computer sulla stessa rete esegui `adb connect <ip-della-tv>:5555` e accetta la richiesta
    che compare sulla TV.
-3. `adb install iRPlay-Mirror-1.3.1.apk`
+3. `adb install iRPlay-Mirror-1.3.2.apk`
 
-Serve Android TV o Google TV 10 o successivi su processore ARM, cioè praticamente qualsiasi TV
-o chiavetta in commercio.
+Serve Android TV o Google TV 9 o successivi su processore ARM, cioè praticamente qualsiasi TV
+o chiavetta in commercio. Dovrebbero andare anche le chiavette Amazon Fire TV con Fire OS 7 o 8
+(l'APK si installa con l'app *Downloader* o con adb); le più recenti con Vega OS non sono
+Android e non possono installarla. Su una Fire TV vera non ho ancora potuto provarla.
 
 Un consiglio: mentre duplichi lo schermo metti la TV in modalità immagine *Gioco*. Gran parte del
 ritardo che resta viene dall'elaborazione dell'immagine della TV stessa, e la modalità Gioco la

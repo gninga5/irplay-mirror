@@ -70,10 +70,12 @@ and sideload it. With adb it takes a minute:
    That unlocks the developer options, where you turn on USB debugging (and network debugging,
    if your TV has it).
 2. From a computer on the same network, run `adb connect <tv-ip>:5555` and accept the prompt on the TV.
-3. `adb install iRPlay-Mirror-1.3.1.apk`
+3. `adb install iRPlay-Mirror-1.3.2.apk`
 
-You need Android TV or Google TV 10 or newer on an ARM chip, which is pretty much every TV and
-streaming stick out there.
+You need Android TV or Google TV 9 or newer on an ARM chip, which is pretty much every TV and
+streaming stick out there. Amazon Fire TV sticks with Fire OS 7 or 8 should work too (sideload
+the APK with the *Downloader* app or adb); the newest ones running Vega OS aren't Android and
+can't install it. I haven't been able to test a Fire TV myself yet.
 
 One tip: switch the TV to its *Game* picture mode while you mirror. Most of the delay that's
 left comes from the TV's own image processing, and Game mode turns it off.

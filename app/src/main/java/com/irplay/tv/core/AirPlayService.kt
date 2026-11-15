@@ -31,6 +31,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.media.MediaCodecInfo
 import android.media.MediaCodecList
 import android.media.MediaFormat
 import android.net.ConnectivityManager
@@ -251,7 +252,7 @@ class AirPlayService : Service() {
      */
     private fun preferredFps(): Int = try {
         val ok = MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos.any { info ->
-            !info.isEncoder && info.isHardwareAccelerated &&
+            !info.isEncoder && isHardwareDecoder(info) &&
                 info.supportedTypes.any { it.equals(MediaFormat.MIMETYPE_VIDEO_AVC, ignoreCase = true) } &&
                 info.getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_AVC)
                     .videoCapabilities?.areSizeAndRateSupported(1920, 1080, 60.0) == true
@@ -260,6 +261,16 @@ class AirPlayService : Service() {
     } catch (e: Exception) {
         30
     }.also { Log.i(TAG, "Frame rate richiesto a iOS: $it fps") }
+
+    /**
+     * Da Android 10 lo dice il sistema. Su Android 9 (Fire OS 7) si riconoscono dal nome i
+     * decoder software di Android: OMX.google.*, c2.android.* e quelli che dichiarano "sw".
+     */
+    private fun isHardwareDecoder(info: MediaCodecInfo): Boolean {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) return info.isHardwareAccelerated
+        val name = info.name.lowercase()
+        return !name.startsWith("omx.google.") && !name.startsWith("c2.android.") && !name.contains(".sw.")
+    }
 
     /** Eventi dal motore nativo (thread nativi): aggiornano lo stato e non bloccano. */
     private val sessionListener = object : NativeBridge.SessionListener {
@@ -584,10 +595,12 @@ class AirPlayService : Service() {
                 NotificationManager.IMPORTANCE_LOW    // nessun suono o pop-up sulla TV
             )
         )
-        startForeground(
-            NOTIFICATION_ID, buildNotification(getString(R.string.receiver_waiting)),
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK,
-        )
+        val notification = buildNotification(getString(R.string.receiver_waiting))
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
+        } else {
+            startForeground(NOTIFICATION_ID, notification)   // Android 9: il tipo viene dal manifest
+        }
     }
 
     /**

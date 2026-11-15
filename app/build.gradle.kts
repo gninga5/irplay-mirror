@@ -3,18 +3,18 @@ plugins {
 }
 
 android {
-    namespace = "com.icast.tv"
+    namespace = "com.irplay.tv"
 
     // SDK di compilazione standard per Google TV moderna
     compileSdk = 37
 
     defaultConfig {
-        applicationId = "com.icast.tv"
+        applicationId = "com.irplay.tv"
         // Min SDK 29: garantisce supporto completo da Android 10 in poi (inclusa la TCL 43P639)
         minSdk = 29
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 2
+        versionName = "1.1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -38,10 +38,8 @@ android {
             // Ottimizzazione e offuscamento con R8 per performance stabili sulla TV
             isMinifyEnabled = true
             isShrinkResources = true
-            proguardFiles(
-                getDefaultProguardFile("proguard-android-optimize.txt"),
-                "proguard-rules.pro"
-            )
+            // Le regole del progetto stanno in src/main/keepRules/rules.keep (lette da AGP in automatico).
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
             signingConfig = signingConfigs.getByName("debug")
         }
         debug {
@@ -60,6 +58,12 @@ android {
             path = file("src/main/cpp/CMakeLists.txt")
             version = "3.22.1"
         }
+    }
+
+    // Solo inglese (predefinito) e italiano: senza filtro, AppCompat e Material porterebbero
+    // decine di traduzioni dei propri testi, e l'app risulterebbe in parte in altre lingue.
+    androidResources {
+        localeFilters += listOf("en", "it")
     }
 
     buildFeatures {

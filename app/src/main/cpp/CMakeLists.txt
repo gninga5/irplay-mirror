@@ -1,12 +1,12 @@
 # ==============================================================================
-# IcAst – CMakeLists.txt
-# Scopo: compila libicast_native.so (motore RTSP / crypto / parser NAL) e collega:
+# iRPlay – CMakeLists.txt
+# Scopo: compila libirplay_native.so (motore RTSP / crypto / parser NAL) e collega:
 #   - mbedTLS   (Apache-2.0): AES-128-CTR (video mirroring) e AES-128-CBC (audio)
 #   - libsodium (ISC, Prefab AAR): Ed25519 / X25519 / SHA-512 per pair-setup/verify
 #   - playfair  (GPL-3): decifratura della chiave FairPlay ricevuta in fp-setup
 # ==============================================================================
 cmake_minimum_required(VERSION 3.22.1)
-project("icast_native" C CXX)
+project("irplay_native" C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -43,10 +43,18 @@ add_library(playfair STATIC
 target_include_directories(playfair PUBLIC ${THIRD_PARTY}/playfair)
 target_compile_options(playfair PRIVATE -w)   # codice upstream: i warning vanno visti solo sul nostro codice
 
-# --- Libreria IcAst ---------------------------------------------------------------
+# --- Libreria iRPlay ---------------------------------------------------------------
 add_library(${CMAKE_PROJECT_NAME} SHARED
         jni_bridge.cpp
-        airplay_server.cpp)
+        airplay_server.cpp
+        airplay_info.cpp
+        airplay_crypto.cpp
+        media_streams.cpp
+        nal_parser.cpp
+        net_util.cpp
+        plist_reader.cpp
+        plist_writer.cpp
+        sps_rewriter.cpp)
 
 # Hardening: questo codice legge pacchetti da una rete non fidata (la LAN).
 target_compile_options(${CMAKE_PROJECT_NAME} PRIVATE

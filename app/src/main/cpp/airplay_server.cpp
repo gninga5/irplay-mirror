@@ -1,55 +1,75 @@
 /*
  * airplay_server.cpp
- * Scopo: ciclo di accettazione TCP e parser RTSP/HTTP robusto contro input ostile.
+ * Scopo: ciclo di accettazione TCP, parser RTSP/HTTP robusto contro input ostile e
+ * gestione dei metodi del protocollo AirPlay (mirroring, AirPlay 1 con pairing legacy).
  *
  * Modello a thread: un thread per l'accept più un thread per ogni connessione
  * (iOS ne apre 1 o 2 per sessione). Il limite kMaxClients impedisce a un host
  * della LAN di esaurire thread e descrittori di file della TV, che su chiavette
  * da 1-2 GB di RAM porterebbe il Low Memory Killer a terminare l'app.
  *
- * Il socket è dual-stack (IPv6 con IPV6_V6ONLY=0): NsdManager annuncia sia il
- * record A sia AAAA e iOS spesso si collega via IPv6 link-local.
+ * Watchdog: recv() sulla connessione RTSP ha un timeout di 1 s. A ogni scadenza si
+ * controlla l'ultima attività della sessione (pacchetti video/audio, richieste RTSP).
+ * Con il video connesso, 3 s senza nulla significano iPhone spento o fuori portata:
+ * la sessione viene chiusa senza aspettare il timeout TCP (che può durare minuti).
  */
+#define LOG_TAG "iRPlay_RTSP"
 #include "airplay_server.h"
 
-#include <android/log.h>
-#include <arpa/inet.h>
 #include <cerrno>
-#include <cstdio>
-#include <netinet/in.h>
+#include <cmath>
+#include <cstdlib>
+#include <cstring>
 #include <netinet/tcp.h>
+#include <poll.h>
 #include <string_view>
-#include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
 #include <utility>
 
-#define TAG "IcAst_RTSP"
-#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
-#define LOGW(...) __android_log_print(ANDROID_LOG_WARN, TAG, __VA_ARGS__)
-#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
+#include <mbedtls/platform_util.h>
 
-namespace icast {
+#include "log.h"
+#include "media_streams.h"
+#include "net_util.h"
+#include "plist_reader.h"
+
+namespace irplay {
+
+    struct RtspRequest {
+        std::string method, uri, protocol;
+        std::vector<std::pair<std::string, std::string>> headers;
+        std::vector<uint8_t> body;
+
+        const std::string* header(std::string_view name) const;
+    };
+
+    struct AirPlayServer::ConnState {
+        Client* client = nullptr;
+        int fd = -1;
+        sockaddr_in6 peer{};
+        crypto::PairingSession pairing;
+        crypto::FairPlay fairplay;
+        std::unique_ptr<Session> session;
+    };
+
     namespace {
 
         constexpr size_t kMaxHeaderBytes = 16 * 1024;
         constexpr size_t kMaxBodyBytes   = 64 * 1024;   // fp-setup = 164 B, i plist di SETUP pesano pochi KB
         constexpr size_t kMaxHeaders     = 64;
-        constexpr size_t kMaxClients     = 4;
-        constexpr int    kIdleTimeoutSec = 60;          // iOS manda GET_PARAMETER/feedback ogni ~2 s durante una sessione
+        constexpr size_t kMaxClients     = 6;
+        constexpr int    kIdleTimeoutSec = 60;          // connessione senza sessione
+        constexpr int64_t kWatchdogMs    = 3000;        // video connesso: iOS invia dati almeno ogni secondo
+        constexpr int64_t kSessionIdleMs = 60000;       // sessione aperta ma video non ancora connesso
+        constexpr size_t kMaxClientName  = 64;
         constexpr const char* kServerHeader = "AirTunes/220.68";
         constexpr const char* kPublic =
-                "SETUP, RECORD, PAUSE, FLUSH, TEARDOWN, OPTIONS, GET_PARAMETER, SET_PARAMETER, ANNOUNCE";
+                "SETUP, RECORD, PAUSE, FLUSH, TEARDOWN, OPTIONS, GET_PARAMETER, SET_PARAMETER, POST, GET";
+        constexpr const char* kOctet = "application/octet-stream";
+        constexpr const char* kBplist = "application/x-apple-binary-plist";
 
         using Headers = std::vector<std::pair<std::string, std::string>>;
-
-        struct Request {
-            std::string method, uri, protocol;
-            Headers headers;
-            std::vector<uint8_t> body;
-
-            const std::string* header(std::string_view name) const;
-        };
 
         bool iequals(std::string_view a, std::string_view b) {
             if (a.size() != b.size()) return false;
@@ -60,11 +80,6 @@ namespace icast {
                 if (x != y) return false;
             }
             return true;
-        }
-
-        const std::string* Request::header(std::string_view name) const {
-            for (const auto& [k, v] : headers) if (iequals(k, name)) return &v;
-            return nullptr;
         }
 
         std::string_view trim(std::string_view s) {
@@ -95,7 +110,7 @@ namespace icast {
 
 // Restituisce 1 se ha estratto una richiesta completa (rimossa da buf),
 // 0 se servono altri byte, -1 se la richiesta è malformata o supera i limiti.
-        int parseRequest(std::vector<uint8_t>& buf, Request& req) {
+        int parseRequest(std::vector<uint8_t>& buf, RtspRequest& req) {
             const std::string_view view(reinterpret_cast<const char*>(buf.data()), buf.size());
             const size_t end = view.find("\r\n\r\n");
             if (end == std::string_view::npos) return buf.size() > kMaxHeaderBytes ? -1 : 0;
@@ -110,7 +125,7 @@ namespace icast {
             if (sp1 == std::string_view::npos || sp2 == std::string_view::npos || sp1 == 0 || sp2 == sp1 + 1)
                 return -1;
 
-            req = Request{};
+            req = RtspRequest{};
             req.method   = std::string(line.substr(0, sp1));
             req.uri      = std::string(line.substr(sp1 + 1, sp2 - sp1 - 1));
             req.protocol = std::string(line.substr(sp2 + 1));
@@ -150,8 +165,7 @@ namespace icast {
         bool sendAll(int fd, const void* data, size_t len) {
             const auto* p = static_cast<const uint8_t*>(data);
             while (len > 0) {
-                // MSG_NOSIGNAL: se il client chiude la connessione, il processo non riceve SIGPIPE (che lo terminerebbe).
-                const ssize_t n = ::send(fd, p, len, MSG_NOSIGNAL);
+                const ssize_t n = ::send(fd, p, len, net::kSendFlags);
                 if (n < 0) {
                     if (errno == EINTR) continue;
                     return false;
@@ -162,8 +176,8 @@ namespace icast {
             return true;
         }
 
-        bool sendResponse(int fd, const Request* req, int code, const char* reason,
-                          const Headers& extra, const std::vector<uint8_t>& body) {
+        bool sendResponse(int fd, const RtspRequest* req, int code, const char* reason,
+                          const Headers& extra = {}, const std::vector<uint8_t>& body = {}) {
             const std::string proto = req ? req->protocol : "RTSP/1.0";
             std::string out = proto + " " + std::to_string(code) + " " + reason + "\r\n";
             if (req) {
@@ -177,84 +191,361 @@ namespace icast {
             return body.empty() || sendAll(fd, body.data(), body.size());
         }
 
-// Restituisce false se la connessione va chiusa.
-        bool dispatch(int fd, const Request& req, const std::string& peer) {
-            // Nel log vanno solo metodo e URI (troncato): i corpi conterranno chiavi.
-            LOGI("%s -> %s %.*s", peer.c_str(), req.method.c_str(),
-                 static_cast<int>(std::min<size_t>(req.uri.size(), 128)), req.uri.c_str());
-
-            if (req.method == "OPTIONS") {
-                return sendResponse(fd, &req, 200, "OK", {{"Public", kPublic}}, {});
-            }
-            LOGW("Metodo non ancora gestito: %s", req.method.c_str());
-            return sendResponse(fd, &req, 501, "Not Implemented", {}, {});
+        bool startsWith(const std::vector<uint8_t>& body, std::string_view prefix) {
+            return body.size() >= prefix.size() && std::memcmp(body.data(), prefix.data(), prefix.size()) == 0;
         }
 
-        std::string peerString(const sockaddr_storage& ss) {
-            char ip[INET6_ADDRSTRLEN] = {};
-            if (ss.ss_family == AF_INET6) {
-                const auto* a = reinterpret_cast<const sockaddr_in6*>(&ss);
-                inet_ntop(AF_INET6, &a->sin6_addr, ip, sizeof ip);
-            } else if (ss.ss_family == AF_INET) {
-                const auto* a = reinterpret_cast<const sockaddr_in*>(&ss);
-                inet_ntop(AF_INET, &a->sin_addr, ip, sizeof ip);
+        // "volume: -12.500000\r\n" -> -12.5. Accetta solo un numero finito tra -144 e 0.
+        bool parseVolume(const std::vector<uint8_t>& body, float& out) {
+            constexpr std::string_view prefix = "volume:";
+            if (!startsWith(body, prefix) || body.size() > 64) return false;
+            std::string s(body.begin() + prefix.size(), body.end());
+            const size_t first = s.find_first_not_of(' ');
+            if (first == std::string::npos) return false;
+            const char* begin = s.c_str() + first;
+            char* end = nullptr;
+            const float v = std::strtof(begin, &end);
+            if (end == begin || (*end != '\0' && *end != '\r' && *end != '\n')) return false;
+            if (!std::isfinite(v) || v < -144.0f || v > 0.0f) return false;
+            out = v;
+            return true;
+        }
+
+        // Nome del dispositivo: massimo kMaxClientName byte, niente caratteri di controllo,
+        // troncato al confine di un carattere UTF-8.
+        std::string sanitizeName(const std::string& in) {
+            std::string out;
+            for (unsigned char c : in) {
+                if (c < 0x20 || c == 0x7F) continue;
+                out.push_back(static_cast<char>(c));
             }
-            return ip;
+            if (out.size() > kMaxClientName) {
+                size_t cut = kMaxClientName;
+                while (cut > 0 && (static_cast<unsigned char>(out[cut]) & 0xC0) == 0x80) --cut;
+                out.resize(cut);
+            }
+            return out;
+        }
+
+        const uint64_t* findUInt(const plist::Dict& d, std::string_view key) {
+            const plist::Value* v = d.find(key);
+            return v ? v->asUInt() : nullptr;
         }
 
     } // namespace
 
-    AirPlayServer::~AirPlayServer() { stop(); }
+    const std::string* RtspRequest::header(std::string_view name) const {
+        for (const auto& [k, v] : headers) if (iequals(k, name)) return &v;
+        return nullptr;
+    }
 
-    int AirPlayServer::start(uint16_t preferredPort) {
-        if (running_) return -1;
+    // =============================================================== dispatch
 
-        const int fd = ::socket(AF_INET6, SOCK_STREAM | SOCK_CLOEXEC, 0);
-        if (fd < 0) { LOGE("socket() fallita: errno %d", errno); return -1; }
+    bool AirPlayServer::dispatch(ConnState& st, const RtspRequest& req) {
+        // Nel log vanno solo metodo e URI (troncato): i corpi contengono chiavi.
+        LOGI("%s %.*s", req.method.c_str(), static_cast<int>(std::min<size_t>(req.uri.size(), 64)), req.uri.c_str());
+        if (st.session) st.session->touch();
+        const int fd = st.fd;
+        const std::string& m = req.method;
+        const std::string& u = req.uri;
+        const bool rtsp = req.protocol == "RTSP/1.0";
+        Headers jack;
+        if (rtsp) jack.emplace_back("Audio-Jack-Status", "connected; type=analog");
 
-        const int off = 0, one = 1;
-        ::setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &off, sizeof off);   // accetta anche IPv4 (mappato)
-        ::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);   // riavvio rapido dopo stop()
+        if (m == "OPTIONS") {
+            jack.emplace_back("Public", kPublic);
+            return sendResponse(fd, &req, 200, "OK", jack);
+        }
 
-        sockaddr_in6 addr{};
-        addr.sin6_family = AF_INET6;
-        addr.sin6_addr = in6addr_any;
-        addr.sin6_port = htons(preferredPort);
-        if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof addr) != 0) {
-            LOGW("Porta %u occupata (errno %d), uso una porta di sistema", preferredPort, errno);
-            addr.sin6_port = 0;
-            if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof addr) != 0) {
-                LOGE("bind() fallita: errno %d", errno);
-                ::close(fd);
-                return -1;
+        if (m == "GET" && u == "/info") {
+            const bool txtOnly = requestsTxtAirPlay(req.body);
+            return sendResponse(fd, &req, 200, "OK", {{"Content-Type", kBplist}},
+                                txtOnly ? info_.txtOnly : info_.full);
+        }
+
+        if (m == "POST" && u == "/pair-setup") {
+            if (!st.pairing.setup(req.body.data(), req.body.size())) {
+                sendResponse(fd, &req, 400, "Bad Request");
+                return false;
+            }
+            const uint8_t* pk = identity_->publicKey();
+            return sendResponse(fd, &req, 200, "OK", {{"Content-Type", kOctet}}, std::vector<uint8_t>(pk, pk + 32));
+        }
+
+        if (m == "POST" && u == "/pair-verify") {
+            if (!req.body.empty() && req.body[0] == 1) {
+                std::array<uint8_t, 96> out{};
+                if (!st.pairing.verifyStep1(*identity_, req.body.data(), req.body.size(), out)) {
+                    LOGW("pair-verify fase 1 rifiutata");
+                    sendResponse(fd, &req, 400, "Bad Request");
+                    return false;
+                }
+                return sendResponse(fd, &req, 200, "OK", {{"Content-Type", kOctet}},
+                                    std::vector<uint8_t>(out.begin(), out.end()));
+            }
+            if (!req.body.empty() && req.body[0] == 0) {
+                if (!st.pairing.verifyStep2(req.body.data(), req.body.size())) {
+                    // Firma non valida: chiave del client manomessa o messaggio alterato. Si chiude.
+                    LOGW("pair-verify: firma del client non valida");
+                    sendResponse(fd, &req, 470, "Connection Authorization Required");
+                    return false;
+                }
+                LOGI("pair-verify completato");
+                return sendResponse(fd, &req, 200, "OK", {{"Content-Type", kOctet}});
+            }
+            sendResponse(fd, &req, 400, "Bad Request");
+            return false;
+        }
+
+        if (m == "POST" && u == "/fp-setup") {
+            std::vector<uint8_t> out;
+            if (!st.fairplay.handle(req.body.data(), req.body.size(), out)) {
+                LOGW("fp-setup non valido (%zu byte)", req.body.size());
+                sendResponse(fd, &req, 400, "Bad Request");
+                return false;
+            }
+            return sendResponse(fd, &req, 200, "OK", {{"Content-Type", kOctet}}, out);
+        }
+
+        if (m == "SETUP") return handleSetup(st, req);
+        if (m == "TEARDOWN") return handleTeardown(st, req);
+
+        if (m == "RECORD") {
+            if (!st.session) return sendResponse(fd, &req, 455, "Method Not Valid in This State");
+            // Latenza audio dichiarata a iOS, in campioni a 44,1 kHz (0,25 s).
+            return sendResponse(fd, &req, 200, "OK",
+                                {{"Audio-Latency", "11025"}, {"Audio-Jack-Status", "connected; type=analog"}});
+        }
+
+        if (m == "GET_PARAMETER") {
+            if (startsWith(req.body, "volume")) {
+                char text[40];
+                std::snprintf(text, sizeof text, "volume: %.6f\r\n", static_cast<double>(volumeDb_.load()));
+                jack.emplace_back("Content-Type", "text/parameters");
+                return sendResponse(fd, &req, 200, "OK", jack,
+                                    std::vector<uint8_t>(text, text + std::strlen(text)));
+            }
+            return sendResponse(fd, &req, 200, "OK", jack);
+        }
+
+        if (m == "SET_PARAMETER") {
+            const std::string* ct = req.header("Content-Type");
+            float db;
+            if (ct && iequals(*ct, "text/parameters") && parseVolume(req.body, db)) {
+                volumeDb_ = db;
+                sink_->onVolume(db);
+            }
+            // Metadati, copertina e avanzamento (solo AirPlay audio): accettati e ignorati.
+            return sendResponse(fd, &req, 200, "OK", jack);
+        }
+
+        if (m == "FLUSH" || (m == "POST" && (u == "/feedback" || u == "/audioMode" || u == "/command"))) {
+            return sendResponse(fd, &req, 200, "OK", jack);
+        }
+
+        LOGW("Metodo non gestito: %s", m.c_str());
+        return sendResponse(fd, &req, 501, "Not Implemented");
+    }
+
+    bool AirPlayServer::handleSetup(ConnState& st, const RtspRequest& req) {
+        const int fd = st.fd;
+        const auto root = plist::parseBinary(req.body.data(), req.body.size());
+        const plist::Dict* d = root ? root->asDict() : nullptr;
+        if (d == nullptr) {
+            LOGW("SETUP con plist non valido");
+            sendResponse(fd, &req, 400, "Bad Request");
+            return false;
+        }
+        plist::Dict resp;
+
+        const plist::Value* ekeyV = d->find("ekey");
+        const plist::Value* eivV = d->find("eiv");
+        if (ekeyV || eivV) {
+            const plist::Data* ekey = ekeyV ? ekeyV->asData() : nullptr;
+            const plist::Data* eiv = eivV ? eivV->asData() : nullptr;
+            uint8_t fpKey[16], key[16];
+            if (!ekey || !eiv || eiv->size() != 16 || !st.fairplay.decryptKey(ekey->data(), ekey->size(), fpKey)) {
+                LOGW("SETUP: chiave FairPlay assente o handshake non completato");
+                sendResponse(fd, &req, 400, "Bad Request");
+                return false;
+            }
+            if (st.pairing.verified()) {
+                crypto::deriveSessionKey(fpKey, st.pairing.sharedSecret(), key);
+            } else {
+                // Client che salta pair-verify (es. alcuni mittenti per Windows): la chiave
+                // FairPlay si usa così com'è, come fa UxPlay.
+                LOGW("SETUP senza pair-verify: chiave FairPlay non derivata");
+                std::memcpy(key, fpKey, 16);
+            }
+            mbedtls_platform_zeroize(fpKey, sizeof fpKey);
+
+            bool busy;
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                busy = sessionOwner_ != nullptr && sessionOwner_ != st.client;
+                if (!busy) sessionOwner_ = st.client;
+            }
+            if (busy) {
+                mbedtls_platform_zeroize(key, sizeof key);
+                LOGW("Un altro dispositivo sta già trasmettendo: SETUP rifiutato");
+                sendResponse(fd, &req, 453, "Not Enough Bandwidth");
+                return false;
+            }
+
+            const bool newSession = !st.session;
+            st.session.reset();   // un SETUP ripetuto sulla stessa connessione riparte da zero
+            st.session = std::make_unique<Session>(*sink_, st.peer, key, eiv->data());
+            mbedtls_platform_zeroize(key, sizeof key);
+
+            const uint64_t* tp = findUInt(*d, "timingPort");
+            const uint16_t remoteTiming = (tp && *tp <= 65535) ? static_cast<uint16_t>(*tp) : 0;
+            const int localTiming = st.session->startTiming(remoteTiming);
+            resp.set("eventPort", 0).set("timingPort", localTiming > 0 ? localTiming : 0);
+
+            if (newSession) {
+                const plist::Value* nameV = d->find("name");
+                const std::string* name = nameV ? nameV->asString() : nullptr;
+                sink_->onSessionStarted(name ? sanitizeName(*name) : std::string());
+            }
+            LOGI("Sessione avviata (pairing %s)", st.pairing.verified() ? "verificato" : "assente");
+        }
+
+        if (const plist::Value* streamsV = d->find("streams")) {
+            const plist::Array* streams = streamsV->asArray();
+            if (!streams || streams->empty() || streams->size() > 4) {
+                sendResponse(fd, &req, 400, "Bad Request");
+                return false;
+            }
+            if (!st.session) return sendResponse(fd, &req, 455, "Method Not Valid in This State");
+
+            plist::Array out;
+            for (const plist::Value& sv : *streams) {
+                const plist::Dict* sd = sv.asDict();
+                const uint64_t* type = sd ? findUInt(*sd, "type") : nullptr;
+                if (!type) {
+                    sendResponse(fd, &req, 400, "Bad Request");
+                    return false;
+                }
+                if (*type == 110) {
+                    const uint64_t* id = findUInt(*sd, "streamConnectionID");
+                    const int port = id ? st.session->startMirror(*id) : -1;
+                    if (port < 0) {
+                        sendResponse(fd, &req, 500, "Internal Server Error");
+                        return false;
+                    }
+                    plist::Dict r;
+                    r.set("type", 110).set("dataPort", port);
+                    out.emplace_back(std::move(r));
+                    LOGI("Stream video pronto sulla porta %d", port);
+                } else if (*type == 96) {
+                    const uint64_t* ct = findUInt(*sd, "ct");
+                    uint16_t dataPort = 0, controlPort = 0;
+                    if (!st.session->startAudio(ct ? static_cast<int>(*ct & 0xFF) : 0, dataPort, controlPort)) {
+                        sendResponse(fd, &req, 500, "Internal Server Error");
+                        return false;
+                    }
+                    plist::Dict r;
+                    r.set("type", 96).set("dataPort", static_cast<int>(dataPort)).set("controlPort", static_cast<int>(controlPort));
+                    out.emplace_back(std::move(r));
+                    LOGI("Stream audio pronto (ct=%d)", ct ? static_cast<int>(*ct & 0xFF) : 0);
+                } else {
+                    LOGW("SETUP: tipo di stream sconosciuto %llu", static_cast<unsigned long long>(*type));
+                    sendResponse(fd, &req, 400, "Bad Request");
+                    return false;
+                }
+            }
+            resp.set("streams", std::move(out));
+        }
+
+        const auto bin = plist::toBinary(resp);
+        if (!bin) {
+            sendResponse(fd, &req, 500, "Internal Server Error");
+            return false;
+        }
+        return sendResponse(fd, &req, 200, "OK", {{"Content-Type", kBplist}}, *bin);
+    }
+
+    bool AirPlayServer::handleTeardown(ConnState& st, const RtspRequest& req) {
+        bool audio = false, video = false;
+        if (!req.body.empty()) {
+            const auto root = plist::parseBinary(req.body.data(), req.body.size());
+            const plist::Dict* d = root ? root->asDict() : nullptr;
+            const plist::Value* sv = d ? d->find("streams") : nullptr;
+            if (const plist::Array* streams = sv ? sv->asArray() : nullptr) {
+                for (const plist::Value& v : *streams) {
+                    const plist::Dict* sd = v.asDict();
+                    const uint64_t* type = sd ? findUInt(*sd, "type") : nullptr;
+                    if (type && *type == 96) audio = true;
+                    if (type && *type == 110) video = true;
+                }
             }
         }
-        if (::listen(fd, 8) != 0) {
-            LOGE("listen() fallita: errno %d", errno);
-            ::close(fd);
+        if (st.session && audio) st.session->stopAudio();
+        if (st.session && video) st.session->stopMirror();
+
+        // Senza stream indicati è la fine della sessione. iOS 26+ non invia più TEARDOWN 110
+        // quando si interrompe il mirroring, solo quello completo.
+        const bool full = !audio && !video;
+        Headers h = {{"Audio-Jack-Status", "connected; type=analog"}};
+        if (full) h.emplace_back("Connection", "close");
+        const bool ok = sendResponse(st.fd, &req, 200, "OK", h);
+        if (full) endSession(st, EndReason::Teardown);
+        return ok;
+    }
+
+    void AirPlayServer::endSession(ConnState& st, EndReason reason) {
+        if (!st.session) return;
+        st.session.reset();   // ferma i flussi: il distruttore attende i thread
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (sessionOwner_ == st.client) sessionOwner_ = nullptr;
+        }
+        LOGI("Sessione terminata (motivo %d)", static_cast<int>(reason));
+        sink_->onSessionEnded(reason);
+    }
+
+    // =============================================================== ciclo di vita
+
+    AirPlayServer::~AirPlayServer() { stop(); }
+
+    int AirPlayServer::start(uint16_t preferredPort, const ReceiverInfo& info, const uint8_t seed[32]) {
+        if (running_) return -1;
+        if (!crypto::init()) { LOGE("libsodium non inizializzata"); return -1; }
+
+        identity_ = crypto::Ed25519Identity::fromSeed(seed);
+        if (!identity_ || info.publicKey.size() != 32 ||
+            std::memcmp(identity_->publicKey(), info.publicKey.data(), 32) != 0) {
+            // La chiave annunciata via mDNS deve essere quella con cui firmiamo pair-verify,
+            // altrimenti iOS rifiuterebbe il pairing con un errore poco chiaro.
+            LOGE("Identità Ed25519 non coerente con la chiave pubblica annunciata");
+            identity_.reset();
             return -1;
         }
 
-        sockaddr_in6 bound{};
-        socklen_t len = sizeof bound;
-        if (::getsockname(fd, reinterpret_cast<sockaddr*>(&bound), &len) != 0) {
-            ::close(fd);
-            return -1;
+        auto plists = buildInfoPlists(info);
+        if (!plists) { LOGE("ReceiverInfo non valido, server non avviato"); return -1; }
+        info_ = std::move(*plists);
+
+        uint16_t port = preferredPort;
+        int fd = net::tcpListen(port, 8);
+        if (fd < 0) {
+            LOGW("Porta %u occupata, uso una porta di sistema", preferredPort);
+            port = 0;
+            fd = net::tcpListen(port, 8);
+            if (fd < 0) { LOGE("Impossibile aprire il socket di ascolto"); return -1; }
         }
 
         listenFd_ = fd;
         running_ = true;
         acceptThread_ = std::thread(&AirPlayServer::acceptLoop, this);
-        const int port = ntohs(bound.sin6_port);
-        LOGI("Server RTSP in ascolto sulla porta %d", port);
+        LOGI("Server RTSP in ascolto sulla porta %u", port);
         return port;
     }
 
     void AirPlayServer::stop() {
         if (!running_.exchange(false)) return;
 
-        // shutdown() sblocca accept(), che ritorna con EINVAL e fa terminare il thread di accettazione.
-        ::shutdown(listenFd_, SHUT_RDWR);
+        ::shutdown(listenFd_, SHUT_RDWR);   // il thread di accettazione esce entro un ciclo di poll
         if (acceptThread_.joinable()) acceptThread_.join();
         ::close(listenFd_);
         listenFd_ = -1;
@@ -266,7 +557,15 @@ namespace icast {
             clients.swap(clients_);
         }
         for (auto& c : clients) if (c->thread.joinable()) c->thread.join();
+        identity_.reset();
         LOGI("Server RTSP fermato");
+    }
+
+    void AirPlayServer::stopActiveSession() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (sessionOwner_ == nullptr) return;
+        sessionOwner_->stopRequested = true;
+        if (sessionOwner_->fd >= 0) ::shutdown(sessionOwner_->fd, SHUT_RDWR);
     }
 
     void AirPlayServer::reapFinishedLocked() {
@@ -282,9 +581,12 @@ namespace icast {
 
     void AirPlayServer::acceptLoop() {
         while (running_) {
+            // poll con timeout invece di accept bloccante: stop() non dipende dal fatto che
+            // shutdown() sblocchi accept() (vero su Linux, non su altri sistemi).
+            pollfd p{listenFd_, POLLIN, 0};
+            if (::poll(&p, 1, 500) <= 0) continue;
             sockaddr_storage ss{};
-            socklen_t len = sizeof ss;
-            const int fd = ::accept4(listenFd_, reinterpret_cast<sockaddr*>(&ss), &len, SOCK_CLOEXEC);
+            const int fd = net::acceptConn(listenFd_, ss);
             if (fd < 0) {
                 if (!running_) break;
                 if (errno == EINTR || errno == ECONNABORTED) continue;
@@ -300,57 +602,82 @@ namespace icast {
                 ::close(fd);
                 continue;
             }
+            sockaddr_in6 peer6{};
+            net::toIn6(ss, peer6);
             auto client = std::make_unique<Client>();
             client->fd = fd;
             Client* raw = client.get();
-            client->thread = std::thread(&AirPlayServer::handleConnection, this, raw, peerString(ss));
+            client->thread = std::thread(&AirPlayServer::handleConnection, this, raw, net::toString(peer6), ss);
             clients_.push_back(std::move(client));
         }
     }
 
-    void AirPlayServer::handleConnection(Client* client, std::string peer) {
-        int fd;
+    void AirPlayServer::handleConnection(Client* client, std::string peer, sockaddr_storage peerAddr) {
+        ConnState st;
+        st.client = client;
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            fd = client->fd;
+            st.fd = client->fd;
         }
+        net::toIn6(peerAddr, st.peer);
         LOGI("Connessione da %s", peer.c_str());
 
-        timeval tv{kIdleTimeoutSec, 0};
-        ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+        // Timeout breve: serve a far girare il watchdog, non a chiudere la connessione.
+        timeval tv{1, 0};
+        ::setsockopt(st.fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
         const int one = 1;
-        ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);   // risposte RTSP piccole: niente ritardo di Nagle
+        ::setsockopt(st.fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);   // risposte RTSP piccole: niente ritardo di Nagle
 
         std::vector<uint8_t> buf;
         buf.reserve(4096);
         uint8_t chunk[4096];
         bool keepOpen = true;
+        int idleSec = 0;
+        EndReason reason = EndReason::Disconnected;
 
         while (keepOpen && running_) {
-            const ssize_t n = ::recv(fd, chunk, sizeof chunk, 0);
+            const ssize_t n = ::recv(st.fd, chunk, sizeof chunk, 0);
             if (n == 0) break;                       // il client ha chiuso
             if (n < 0) {
                 if (errno == EINTR) continue;
-                break;                               // timeout di inattività o errore
+                if (errno != EAGAIN && errno != EWOULDBLOCK) break;
+                if (st.session) {
+                    const bool video = st.session->mirrorConnected();
+                    if (st.session->idleMs() > (video ? kWatchdogMs : kSessionIdleMs)) {
+                        LOGW("Watchdog: nessun dato dal client, chiudo la sessione");
+                        reason = EndReason::Watchdog;
+                        break;
+                    }
+                } else if (++idleSec >= kIdleTimeoutSec) {
+                    break;
+                }
+                continue;
             }
+            idleSec = 0;
             buf.insert(buf.end(), chunk, chunk + n);
             if (buf.size() > kMaxHeaderBytes + kMaxBodyBytes + 4) {
                 LOGW("Buffer oltre il limite da %s, chiudo", peer.c_str());
                 break;
             }
             for (;;) {
-                Request req;
+                RtspRequest req;
                 const int r = parseRequest(buf, req);
                 if (r == 0) break;
                 if (r < 0) {
                     LOGW("Richiesta malformata da %s", peer.c_str());
-                    sendResponse(fd, nullptr, 400, "Bad Request", {}, {});
+                    sendResponse(st.fd, nullptr, 400, "Bad Request");
                     keepOpen = false;
                     break;
                 }
-                if (!dispatch(fd, req, peer)) { keepOpen = false; break; }
+                if (!dispatch(st, req)) { keepOpen = false; break; }
             }
         }
+
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (client->stopRequested) reason = EndReason::Local;
+        }
+        endSession(st, reason);
 
         std::lock_guard<std::mutex> lock(mutex_);
         ::close(client->fd);
@@ -359,4 +686,4 @@ namespace icast {
         LOGI("Connessione chiusa: %s", peer.c_str());
     }
 
-} // namespace icast
+} // namespace irplay

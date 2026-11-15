@@ -1,0 +1,47 @@
+iRPlay Mirror — screen mirroring receiver for Android TV
+Copyright (C) 2026 the iRPlay Mirror authors
+
+This program is free software: you can redistribute it and/or modify it under the terms of
+the GNU General Public License version 3 as published by the Free Software Foundation.
+It is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even
+the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+The full text of the license follows below.
+Source code: https://github.com/gninga5/irplay-mirror
+
+iRPlay Mirror is not affiliated with or endorsed by Apple Inc. iPhone and iPad are trademarks of Apple Inc.
+
+========================================================================================
+THIRD-PARTY COMPONENTS
+========================================================================================
+
+playfair
+  Reconstruction of FairPlay SAP decryption, distributed with UxPlay
+  (https://github.com/FDH2/UxPlay, lib/playfair directory).
+  License: GNU General Public License v3.
+
+FairPlay reply tables (fairplay_tables.h)
+  Copyright (C) 2018 Juho Vähä-Herttua, from UxPlay / RPiPlay.
+  License: GNU Lesser General Public License v2.1 or later.
+
+Mbed TLS 3.6
+  Copyright The Mbed TLS Contributors.
+  License: Apache License 2.0 (https://www.apache.org/licenses/LICENSE-2.0).
+
+libsodium 1.0.22
+  Copyright (c) 2013-2026 Frank Denis <j at pureftpd dot org>.
+  ISC License: Permission to use, copy, modify, and/or distribute this software for any
+  purpose with or without fee is hereby granted, provided that the above copyright notice
+  and this permission notice appear in all copies.
+  THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH REGARD TO
+  THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS.
+
+Roboto (letters of the launcher banner)
+  Copyright Google LLC. License: Apache License 2.0.
+
+AndroidX, Material Components, Kotlin and kotlinx.coroutines libraries
+  Copyright The Android Open Source Project, Google LLC and JetBrains s.r.o.
+  License: Apache License 2.0.
+
+========================================================================================
+GNU GENERAL PUBLIC LICENSE, VERSION 3
+========================================================================================

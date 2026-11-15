@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Sfondo della home: gradiente blu notte, coerente con icona e banner. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android">
+    <gradient
+        android:angle="315"
+        android:endColor="#FF14244A"
+        android:startColor="#FF070B18"
+        android:type="linear" />
+</shape>

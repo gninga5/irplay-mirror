@@ -1,0 +1,47 @@
+iRPlay Mirror — ricevitore di duplicazione schermo per Android TV
+Copyright (C) 2026 gli autori di iRPlay Mirror
+
+Questo programma è software libero: puoi ridistribuirlo e/o modificarlo secondo i termini
+della GNU General Public License versione 3, come pubblicata dalla Free Software Foundation.
+È distribuito nella speranza che sia utile, ma SENZA ALCUNA GARANZIA; senza neppure la
+garanzia implicita di COMMERCIABILITÀ o IDONEITÀ PER UNO SCOPO PARTICOLARE.
+Il testo completo della licenza è riportato più sotto.
+Codice sorgente: https://github.com/gninga5/irplay-mirror
+
+iRPlay Mirror non è affiliato ad Apple Inc. né approvato da Apple. iPhone e iPad sono marchi di Apple Inc.
+
+========================================================================================
+COMPONENTI DI TERZE PARTI
+========================================================================================
+
+playfair
+  Ricostruzione della decifratura FairPlay SAP, distribuita con UxPlay
+  (https://github.com/FDH2/UxPlay, directory lib/playfair).
+  Licenza: GNU General Public License v3.
+
+Tabelle di risposta FairPlay (fairplay_tables.h)
+  Copyright (C) 2018 Juho Vähä-Herttua, da UxPlay / RPiPlay.
+  Licenza: GNU Lesser General Public License v2.1 o successiva.
+
+Mbed TLS 3.6
+  Copyright The Mbed TLS Contributors.
+  Licenza: Apache License 2.0 (https://www.apache.org/licenses/LICENSE-2.0).
+
+libsodium 1.0.22
+  Copyright (c) 2013-2026 Frank Denis <j at pureftpd dot org>.
+  Licenza ISC: Permission to use, copy, modify, and/or distribute this software for any
+  purpose with or without fee is hereby granted, provided that the above copyright notice
+  and this permission notice appear in all copies.
+  THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH REGARD TO
+  THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS.
+
+Roboto (lettere del banner del launcher)
+  Copyright Google LLC. Licenza: Apache License 2.0.
+
+Librerie AndroidX, Material Components, Kotlin e kotlinx.coroutines
+  Copyright The Android Open Source Project, Google LLC e JetBrains s.r.o.
+  Licenza: Apache License 2.0.
+
+========================================================================================
+GNU GENERAL PUBLIC LICENSE, VERSIONE 3
+========================================================================================

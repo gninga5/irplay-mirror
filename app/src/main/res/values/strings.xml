@@ -1,5 +1,47 @@
 <resources>
-    <string name="app_name">IcAst</string>
-    <string name="receiver_channel_name">Ricevitore attivo</string>
-    <string name="receiver_waiting">In attesa di iPhone o iPad sulla rete locale</string>
+    <!-- Lingua predefinita: inglese. La versione italiana è in values-it/ e viene scelta
+         automaticamente quando la lingua della TV è l'italiano. -->
+    <string name="app_name" translatable="false">iRPlay Mirror</string>
+    <string name="tagline">Screen mirroring for iPhone, iPad and Mac</string>
+
+    <string name="receiver_channel_name">Receiver active</string>
+    <string name="receiver_waiting">Waiting for iPhone or iPad on the local network</string>
+    <string name="receiver_connected">Device connected</string>
+    <string name="receiver_mirroring">Screen mirroring in progress</string>
+
+    <string name="label_tv_name">TV name</string>
+    <string name="label_ip">IP address</string>
+    <string name="ip_ethernet">%1$s · Ethernet</string>
+    <string name="ip_wifi">%1$s · Wi-Fi</string>
+    <string name="label_status">Status</string>
+    <string name="receiver_no_network">No network</string>
+    <string name="client_unknown">an iOS device</string>
+
+    <string name="status_short_starting">Starting</string>
+    <string name="status_short_ready">Ready</string>
+    <string name="status_short_connected">Connected</string>
+    <string name="status_short_mirroring">Mirroring</string>
+    <string name="status_short_failed">Error</string>
+
+    <string name="status_starting">Starting the receiver…</string>
+    <string name="status_ready">Waiting for iPhone or iPad</string>
+    <string name="status_connected">Connected to %1$s, waiting for video…</string>
+    <string name="status_mirroring">Mirroring from %1$s</string>
+    <string name="status_failed">The receiver could not start. Check the network and reopen the app.</string>
+
+    <string name="how_to_title">How to connect</string>
+    <string name="step_1">Connect your iPhone or iPad to the same Wi-Fi network as this TV.</string>
+    <string name="step_2">Open Control Center and tap Screen Mirroring.</string>
+    <string name="step_3">Choose “%1$s”. To stop, press BACK on the remote.</string>
+    <string name="privacy_note">Everything on your device screen appears on the TV, including notifications and messages.</string>
+
+    <string name="auto_open_title">Open automatically</string>
+    <string name="auto_open_on">iRPlay opens when an iPhone or iPad starts mirroring</string>
+    <string name="auto_open_off">Off: open iRPlay before you start mirroring</string>
+    <string name="auto_open_needs_permission">Needs system permission: press OK to grant it</string>
+    <string name="overlay_unavailable">This TV does not allow automatic opening: open iRPlay before you start mirroring.</string>
+
+    <string name="licenses_button">Licenses</string>
+    <string name="licenses_title">Licenses</string>
+    <string name="licenses_hint">Use the up and down arrows on the remote to scroll.</string>
 </resources>

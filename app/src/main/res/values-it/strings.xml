@@ -1,0 +1,44 @@
+<resources>
+    <string name="tagline">Duplicazione schermo per iPhone, iPad e Mac</string>
+
+    <string name="receiver_channel_name">Ricevitore attivo</string>
+    <string name="receiver_waiting">In attesa di iPhone o iPad sulla rete locale</string>
+    <string name="receiver_connected">Dispositivo collegato</string>
+    <string name="receiver_mirroring">Duplicazione schermo in corso</string>
+
+    <string name="label_tv_name">Nome della TV</string>
+    <string name="label_ip">Indirizzo IP</string>
+    <string name="ip_ethernet">%1$s · Ethernet</string>
+    <string name="ip_wifi">%1$s · Wi-Fi</string>
+    <string name="label_status">Stato</string>
+    <string name="receiver_no_network">Nessuna rete</string>
+    <string name="client_unknown">un dispositivo iOS</string>
+
+    <string name="status_short_starting">Avvio</string>
+    <string name="status_short_ready">Pronto</string>
+    <string name="status_short_connected">Collegato</string>
+    <string name="status_short_mirroring">In duplicazione</string>
+    <string name="status_short_failed">Errore</string>
+
+    <string name="status_starting">Avvio del ricevitore…</string>
+    <string name="status_ready">In attesa di iPhone o iPad</string>
+    <string name="status_connected">Collegato a %1$s, in attesa del video…</string>
+    <string name="status_mirroring">Duplicazione da %1$s</string>
+    <string name="status_failed">Il ricevitore non si è avviato. Controlla la rete e riapri l\'app.</string>
+
+    <string name="how_to_title">Come collegarsi</string>
+    <string name="step_1">Collega iPhone o iPad alla stessa rete Wi-Fi di questa TV.</string>
+    <string name="step_2">Apri il Centro di Controllo e tocca Duplica schermo.</string>
+    <string name="step_3">Scegli “%1$s”. Per interrompere premi INDIETRO sul telecomando.</string>
+    <string name="privacy_note">Sulla TV appare tutto ciò che è sullo schermo del dispositivo, comprese notifiche e messaggi.</string>
+
+    <string name="auto_open_title">Apertura automatica</string>
+    <string name="auto_open_on">iRPlay si apre quando un iPhone o iPad inizia la duplicazione</string>
+    <string name="auto_open_off">Disattivata: apri iRPlay prima di iniziare la duplicazione</string>
+    <string name="auto_open_needs_permission">Serve un permesso di sistema: premi OK per concederlo</string>
+    <string name="overlay_unavailable">Questa TV non consente l\'apertura automatica: apri iRPlay prima di iniziare la duplicazione.</string>
+
+    <string name="licenses_button">Licenze</string>
+    <string name="licenses_title">Licenze</string>
+    <string name="licenses_hint">Usa le frecce su e giù del telecomando per scorrere.</string>
+</resources>

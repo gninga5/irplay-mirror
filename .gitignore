@@ -13,3 +13,9 @@
 .externalNativeBuild
 .cxx
 local.properties
+/tools/hosttest/build
+
+# Impostazioni personali di Android Studio (contengono percorsi locali): si condivide solo lo stile del codice.
+/.idea/*
+!/.idea/codeStyles/
+/.kotlin

@@ -429,3 +429,171 @@ pub unsafe extern "C" fn irplay_h264_slice_is_b(nal: *const u8, len: usize) -> b
     // SAFETY: contratto della funzione.
     unsafe { input(nal, len) }.is_some_and(|n| guard(false, || crate::h264::slice_is_b(n)))
 }
+
+// ---------------------------------------------------------------------------- audio RTP
+
+/// Intestazione RTP audio: seq e timestamp. false se non è un pacchetto audio AirPlay.
+///
+/// # Safety
+/// `buf` deve puntare a `len` byte leggibili; uscite scrivibili.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn irplay_rtp_header(buf: *const u8, len: usize, seq: *mut u16, rtp: *mut u32) -> bool {
+    if seq.is_null() || rtp.is_null() {
+        return false;
+    }
+    // SAFETY: contratto della funzione.
+    let Some(b) = (unsafe { input(buf, len) }) else { return false };
+    let Some((s, r)) = guard(None, || crate::rtp::parse_rtp(b)) else { return false };
+    // SAFETY: scrivibili per contratto.
+    unsafe {
+        *seq = s;
+        *rtp = r;
+    }
+    true
+}
+
+/// Pacchetto della porta di controllo: 0 altro, 1 ritrasmissione (RTP dal byte 4),
+/// 2 sincronizzazione (frame RTP in `rtp`).
+///
+/// # Safety
+/// `buf` deve puntare a `len` byte leggibili; `rtp` scrivibile.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn irplay_rtp_control(buf: *const u8, len: usize, rtp: *mut u32) -> i32 {
+    if rtp.is_null() {
+        return 0;
+    }
+    // SAFETY: contratto della funzione.
+    let Some(b) = (unsafe { input(buf, len) }) else { return 0 };
+    match guard(crate::rtp::Control::Other, || crate::rtp::classify_control(b)) {
+        crate::rtp::Control::Resend => 1,
+        crate::rtp::Control::Sync(r) => {
+            // SAFETY: scrivibile per contratto.
+            unsafe { *rtp = r };
+            2
+        }
+        crate::rtp::Control::Other => 0,
+    }
+}
+
+/// Nuovo buffer di riordino.
+#[unsafe(no_mangle)]
+pub extern "C" fn irplay_reorder_new() -> *mut crate::rtp::Reorder {
+    guard(None, || Some(Box::new(crate::rtp::Reorder::new()))).map_or(std::ptr::null_mut(), Box::into_raw)
+}
+
+/// Libera il buffer.
+///
+/// # Safety
+/// `h` da [`irplay_reorder_new`], non più usato dopo.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn irplay_reorder_free(h: *mut crate::rtp::Reorder) {
+    if !h.is_null() {
+        // SAFETY: creato con Box::into_raw, liberato una volta sola.
+        drop(unsafe { Box::from_raw(h) });
+    }
+}
+
+/// # Safety
+/// `h` nullo oppure da [`irplay_reorder_new`], usato da un solo thread.
+unsafe fn reorder<'a>(h: *mut crate::rtp::Reorder) -> Option<&'a mut crate::rtp::Reorder> {
+    // SAFETY: contratto della funzione.
+    (!h.is_null()).then(|| unsafe { &mut *h })
+}
+
+/// Musica: aggiunge un pacchetto (payload già decifrato).
+///
+/// # Safety
+/// `h` valido; `payload` `len` byte leggibili.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn irplay_reorder_insert(h: *mut crate::rtp::Reorder, seq: u16, rtp: u32, payload: *const u8, len: usize) {
+    // SAFETY: contratto della funzione.
+    if let (Some(r), Some(p)) = (unsafe { reorder(h) }, unsafe { input(payload, len) }) {
+        guard((), || r.insert(seq, rtp, p));
+    }
+}
+
+/// Musica: prossima azione. 0 niente; 1 riprodurre (`data`/`len` validi fino alla chiamata
+/// successiva, timestamp in `a`); 2 chiedere di nuovo `b` pacchetti da `a`.
+///
+/// # Safety
+/// `h` valido; uscite scrivibili.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn irplay_reorder_next(
+    h: *mut crate::rtp::Reorder,
+    now_ms: i64,
+    data: *mut *const u8,
+    len: *mut usize,
+    a: *mut u32,
+    b: *mut u32,
+) -> i32 {
+    if data.is_null() || len.is_null() || a.is_null() || b.is_null() {
+        return 0;
+    }
+    // SAFETY: contratto della funzione.
+    let Some(r) = (unsafe { reorder(h) }) else { return 0 };
+    match guard(crate::rtp::Event::Idle, || r.next(now_ms)) {
+        crate::rtp::Event::Idle => 0,
+        crate::rtp::Event::Deliver { rtp } => {
+            let d = r.delivered();
+            // SAFETY: uscite scrivibili per contratto; i dati restano validi fino alla
+            // prossima chiamata su questo buffer.
+            unsafe {
+                *data = d.as_ptr();
+                *len = d.len();
+                *a = rtp;
+            }
+            1
+        }
+        crate::rtp::Event::Resend { first, count } => {
+            // SAFETY: uscite scrivibili per contratto.
+            unsafe {
+                *a = u32::from(first);
+                *b = u32::from(count);
+            }
+            2
+        }
+    }
+}
+
+/// FLUSH: svuota; `next_seq` < 0 se il prossimo numero di sequenza non è noto.
+///
+/// # Safety
+/// `h` valido.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn irplay_reorder_flush(h: *mut crate::rtp::Reorder, next_seq: i32) {
+    // SAFETY: contratto della funzione.
+    if let Some(r) = unsafe { reorder(h) } {
+        let s = (next_seq >= 0).then_some((next_seq & 0xFFFF) as u16);
+        guard((), || r.flush(s));
+    }
+}
+
+/// Duplicazione schermo: true se il pacchetto va riprodotto.
+///
+/// # Safety
+/// `h` valido.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn irplay_reorder_accept_live(h: *mut crate::rtp::Reorder, seq: u16) -> bool {
+    // SAFETY: contratto della funzione.
+    unsafe { reorder(h) }.is_some_and(|r| guard(false, || r.accept_live(seq)))
+}
+
+/// Pacchetti in attesa, persi e ritrasmissioni chieste.
+///
+/// # Safety
+/// `h` valido; uscite scrivibili.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn irplay_reorder_stats(h: *mut crate::rtp::Reorder, buffered: *mut usize, lost: *mut u64, resend: *mut u64) -> bool {
+    if buffered.is_null() || lost.is_null() || resend.is_null() {
+        return false;
+    }
+    // SAFETY: contratto della funzione.
+    let Some(r) = (unsafe { reorder(h) }) else { return false };
+    // SAFETY: uscite scrivibili per contratto.
+    unsafe {
+        *buffered = r.buffered();
+        *lost = r.lost;
+        *resend = r.resend_asked;
+    }
+    true
+}

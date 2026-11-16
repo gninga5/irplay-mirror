@@ -11,7 +11,7 @@
 #include <cstdint>
 
 namespace irplay {
-    inline constexpr uint32_t kRustAbiVersion = 6;
+    inline constexpr uint32_t kRustAbiVersion = 7;
 
     // Esiti di irplay_hevc_config (HEVC_CONFIG_* in lib.rs).
     inline constexpr int kHevcConfigInvalid = 0;
@@ -36,6 +36,7 @@ extern "C" {
     struct IrplayPairing;
     struct IrplayCtr;
     struct IrplayCbc;
+    struct IrplayReorder;
 
     // Porzione [off, off+len) di un buffer passato a Rust.
     struct IrplaySpan { size_t off; size_t len; };
@@ -80,6 +81,18 @@ extern "C" {
     ByteList* irplay_h264_parse_avcc(const uint8_t* data, size_t len);
     ByteList* irplay_h264_patch_sps(const uint8_t* sps, size_t len);
     bool irplay_h264_slice_is_b(const uint8_t* nal, size_t len);
+
+    // Audio RTP (rust/src/rtp.rs): intestazioni e buffer di riordino.
+    bool irplay_rtp_header(const uint8_t* buf, size_t len, uint16_t* seq, uint32_t* rtp);
+    int irplay_rtp_control(const uint8_t* buf, size_t len, uint32_t* rtp);   // 0 altro, 1 ritrasmissione, 2 sincronizzazione
+    IrplayReorder* irplay_reorder_new();
+    void irplay_reorder_free(IrplayReorder* h);
+    void irplay_reorder_insert(IrplayReorder* h, uint16_t seq, uint32_t rtp, const uint8_t* payload, size_t len);
+    // 0 niente; 1 riprodurre data/len (validi fino alla chiamata successiva), rtp in a; 2 chiedere b pacchetti da a.
+    int irplay_reorder_next(IrplayReorder* h, int64_t now_ms, const uint8_t** data, size_t* len, uint32_t* a, uint32_t* b);
+    void irplay_reorder_flush(IrplayReorder* h, int32_t next_seq);
+    bool irplay_reorder_accept_live(IrplayReorder* h, uint16_t seq);
+    bool irplay_reorder_stats(IrplayReorder* h, size_t* buffered, uint64_t* lost, uint64_t* resend);
 
     // Crittografia (rust/src/ffi_crypto.rs). Segreti e stati restano in Rust.
     bool irplay_random(uint8_t* buf, size_t len);

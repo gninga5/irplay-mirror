@@ -14,7 +14,9 @@
 #include <vector>
 
 #include "nal_parser.h"
+#include "audio_reorder.h"
 #include "reference.h"
+#include "rust_core.h"
 #include "sps_rewriter.h"
 
 using Bytes = std::vector<uint8_t>;
@@ -428,6 +430,86 @@ static void h264Diff(long iters) {
     printf("frame AVCC: %ld input, %ld validi, differenze %ld\n", iters, valid, failures - before);
 }
 
+// ------------------------------------------------------------------------- audio RTP
+
+struct RustReorder {
+    IrplayReorder* h = irplay_reorder_new();
+    ~RustReorder() { irplay_reorder_free(h); }
+    void drain(int64_t now, std::vector<ref::audio::Action>& out) {
+        const uint8_t* d = nullptr; size_t n = 0; uint32_t a = 0, b = 0;
+        for (;;) {
+            const int r = irplay_reorder_next(h, now, &d, &n, &a, &b);
+            if (r == 1) out.push_back({1, a, 0, Bytes(d, d + n)});
+            else if (r == 2) out.push_back({2, a, b, {}});
+            else return;
+        }
+    }
+};
+
+static void audioDiff(long iters) {
+    long before = failures, delivered = 0;
+    for (long it = 0; it < iters / 100; ++it) {
+        ref::audio::Reorder a;
+        RustReorder b;
+        const bool live = R(4) == 0;
+        uint16_t seq = (uint16_t) (R(3) == 0 ? 65536 - R(300) : R(65536));
+        uint32_t rtp = (uint32_t) rng();
+        int64_t now = 1000 + (int64_t) R(100000);
+        std::vector<std::pair<uint16_t, uint32_t>> late;   // pacchetti trattenuti per arrivare dopo
+        bool same = true;
+        for (int step = 0; step < 400 && same; ++step) {
+            const unsigned ev = (unsigned) R(100);
+            uint16_t s = seq; uint32_t t = rtp;
+            if (ev < 70) { seq++; rtp += 352; }
+            else if (ev < 78) { seq++; rtp += 352; late.push_back({s, t}); continue; }          // arriva più tardi
+            else if (ev < 84) { seq += (uint16_t) (2 + R(5)); rtp += 352 * 3; }                    // persi
+            else if (ev < 87 && !late.empty()) { const size_t k = R(late.size()); s = late[k].first; t = late[k].second; late.erase(late.begin() + (long) k); }
+            else if (ev < 89) { s = (uint16_t) (seq - 1 - R(3)); }                                // duplicato
+            else if (ev < 91) {                                                                    // salto, anche sulle soglie
+                static const int edges[] = {255, 256, 257, 999, 1000, 1001, -999, -1000, -1001, -255, -256, -1, -2};
+                const int jump = R(2) ? edges[R(13)] : (R(2) ? 300 + (int) R(2000) : -1000 - (int) R(2000));
+                s = (uint16_t) (seq + jump);
+                if (R(2)) { seq = s; seq++; }
+            }
+            else if (ev < 93) {                                                                    // FLUSH
+                const int next = R(2) ? (int) seq : -1;
+                a.flush(next); irplay_reorder_flush(b.h, next);
+                late.clear(); continue;
+            } else { now += (int64_t) R(400); }
+            now += (int64_t) R(30);
+            Bytes payload(1 + R(40)); for (auto& c : payload) c = (uint8_t) rng();
+            std::vector<ref::audio::Action> ea, eb;
+            if (live) {
+                const bool ra = a.acceptLive(s), rb = irplay_reorder_accept_live(b.h, s);
+                same = ra == rb;
+            } else {
+                a.insert(s, t, payload.data(), payload.size());
+                irplay_reorder_insert(b.h, s, t, payload.data(), payload.size());
+                a.drain(now, ea); b.drain(now, eb);
+                same = ea == eb;
+                delivered += (long) ea.size();
+            }
+            size_t bb = 0; uint64_t lost = 0, resend = 0;
+            irplay_reorder_stats(b.h, &bb, &lost, &resend);
+            same = same && bb == a.buffered() && lost == a.lost() && resend == a.resendAsked();
+        }
+        if (!same && failures++ < 5) fprintf(stderr, "DIFFERENZA audio: sequenza %ld (live %d)\n", it, live);
+    }
+    printf("audio RTP: %ld sequenze da 400 eventi, %ld azioni, differenze %ld\n", iters / 100, delivered, failures - before);
+    before = failures;
+    for (long it = 0; it < iters; ++it) {
+        Bytes p(R(40)); for (auto& c : p) c = (uint8_t) rng();
+        if (p.size() > 1 && R(2)) { p[0] = 0x80; p[1] = (uint8_t) ((R(2) << 7) | (R(2) ? 0x60 : R(3) ? 0x54 : 0x56)); }
+        uint16_t s1 = 0, s2 = 0; uint32_t r1 = 0, r2 = 0;
+        const bool h1 = irplay_rtp_header(p.data(), p.size(), &s1, &r1), h2 = ref::audio::parseRtp(p.data(), p.size(), s2, r2);
+        DIFF(h1 == h2 && (!h1 || (s1 == s2 && r1 == r2)), "rtp intestazione", p);
+        uint32_t c1 = 0, c2 = 0;
+        const int k1 = irplay_rtp_control(p.data(), p.size(), &c1), k2 = p.size() >= 2 ? ref::audio::classifyControl(p.data(), p.size(), c2) : 0;
+        DIFF(k1 == k2 && (k1 != 2 || c1 == c2), "rtp controllo", p);
+    }
+    printf("RTP:       %ld intestazioni, differenze %ld\n", iters, failures - before);
+}
+
 int main(int argc, char** argv) {
     const long iters = argc > 1 ? std::atol(argv[1]) : 200000;
     plistDiff(iters);
@@ -435,6 +517,7 @@ int main(int argc, char** argv) {
     rtspDiff(iters);
     hlsDiff(iters / 2);
     h264Diff(iters);
+    audioDiff(iters);
     if (failures) { printf("PARSER DIVERSI: %ld differenze\n", failures); return 1; }
     printf("parser Rust identici ai riferimenti C++\n");
     return 0;

@@ -26,6 +26,7 @@
 #include <netinet/in.h>
 
 #include "airplay_crypto.h"
+#include "rust_core.h"
 #include "session_sink.h"
 
 namespace irplay {
@@ -81,19 +82,10 @@ namespace irplay {
         int64_t dueMs(uint32_t rtp) const;
 
     private:
-        struct Slot {
-            bool used = false;
-            uint16_t seq = 0;
-            uint32_t rtp = 0;
-            std::vector<uint8_t> data;
-        };
-        static constexpr size_t kSlots = 256;   // ~2 s di pacchetti ALAC da 352 campioni
-
         void run();
         void onRtp(uint8_t* buf, size_t len);
-        void insert(uint16_t seq, uint32_t rtp, const uint8_t* payload, size_t len);
         void drain(int64_t now);
-        void resetBuffer();
+        size_t buffered() const;
         void requestResend(uint16_t first, uint16_t count);
         void deliver(const uint8_t* payload, size_t len, uint32_t rtp);
 
@@ -109,13 +101,8 @@ namespace irplay {
         std::atomic<int> flushSeq_{-2};  // -2 = nessun flush in attesa
         std::thread thread_;
 
-        // Stato confinato al thread audio.
-        bool haveSeq_ = false;
-        uint16_t lastSeq_ = 0;           // duplicazione: ultimo numero di sequenza riprodotto
-        uint16_t expected_ = 0;          // musica: prossimo pacchetto da riprodurre
-        std::array<Slot, kSlots> slots_;
-        size_t buffered_ = 0;
-        int64_t gapSinceMs_ = 0;
+        // Stato confinato al thread audio. Riordino, pacchetti persi e duplicati: rust/src/rtp.rs.
+        IrplayReorder* reorder_;
         uint16_t resendCounter_ = 0;
         // Ultima sincronizzazione di iOS: frame RTP in uscita adesso e istante di arrivo.
         // Scritta dal thread audio, letta anche dal thread RTSP (avanzamento del brano).
@@ -128,7 +115,7 @@ namespace irplay {
         std::atomic<uint32_t> firstRtp_{0};
         std::atomic<int64_t> firstAtMs_{0};
         // Statistiche di qualità, scritte nel log a fine stream (solo conteggi).
-        uint64_t statDelivered_ = 0, statLost_ = 0, statResendAsked_ = 0;
+        uint64_t statDelivered_ = 0;
         std::unique_ptr<AlacDecoder> alac_;
         std::vector<uint8_t> pcm_;
     };

@@ -45,10 +45,6 @@ namespace irplay {
             return uint32_t{p[0]} | (uint32_t{p[1]} << 8) | (uint32_t{p[2]} << 16) | (uint32_t{p[3]} << 24);
         }
         uint64_t le64(const uint8_t* p) { return uint64_t{le32(p)} | (uint64_t{le32(p + 4)} << 32); }
-        uint16_t be16(const uint8_t* p) { return static_cast<uint16_t>((p[0] << 8) | p[1]); }
-        uint32_t be32(const uint8_t* p) {
-            return (uint32_t{p[0]} << 24) | (uint32_t{p[1]} << 16) | (uint32_t{p[2]} << 8) | uint32_t{p[3]};
-        }
 
         int64_t ntpToUs(uint64_t ntp) {
             const uint64_t sec = ntp >> 32, frac = ntp & 0xFFFFFFFFu;
@@ -293,8 +289,6 @@ namespace irplay {
     // =============================================================== AudioStream
 
     namespace {
-        constexpr int64_t kGapWaitMs = 150;    // attesa di un pacchetto mancante prima di saltarlo
-        constexpr uint16_t kMaxResend = 64;
         // Anticipo con cui iOS manda l'audio (latenza dichiarata nei pacchetti di sincronizzazione:
         // 77175 campioni = 1750 ms). Usato solo finché la prima sincronizzazione non arriva.
         constexpr int64_t kAssumedLeadMs = 1750;
@@ -304,11 +298,21 @@ namespace irplay {
                              const uint8_t iv[16], int codecType, uint16_t remoteControlPort,
                              std::atomic<int64_t>& activity)
             : sink_(sink), peer_(peer), remoteControl_(peer), decryptor_(sessionKey, iv), codecType_(codecType),
-              music_(codecType != kCodecAacEld), activity_(activity) {
+              music_(codecType != kCodecAacEld), activity_(activity), reorder_(irplay_reorder_new()) {
         remoteControl_.sin6_port = htons(remoteControlPort);
     }
 
-    AudioStream::~AudioStream() { stop(); }
+    AudioStream::~AudioStream() {
+        stop();
+        irplay_reorder_free(reorder_);
+    }
+
+    size_t AudioStream::buffered() const {
+        size_t b = 0;
+        uint64_t lost = 0, resend = 0;
+        irplay_reorder_stats(reorder_, &b, &lost, &resend);
+        return b;
+    }
 
     bool AudioStream::start(uint16_t& dataPort, uint16_t& controlPort) {
         if (codecType_ == kCodecAlac) {
@@ -336,9 +340,12 @@ namespace irplay {
     void AudioStream::stop() {
         if (!running_.exchange(false) && !thread_.joinable()) return;
         if (thread_.joinable()) thread_.join();   // il thread esce entro un ciclo di poll (250 ms)
+        size_t b = 0;
+        uint64_t lost = 0, resend = 0;
+        irplay_reorder_stats(reorder_, &b, &lost, &resend);
         LOGI("Audio: %llu pacchetti riprodotti, %llu persi, %llu ritrasmissioni chieste",
-             static_cast<unsigned long long>(statDelivered_), static_cast<unsigned long long>(statLost_),
-             static_cast<unsigned long long>(statResendAsked_));
+             static_cast<unsigned long long>(statDelivered_), static_cast<unsigned long long>(lost),
+             static_cast<unsigned long long>(resend));
         if (dataFd_ >= 0) ::close(dataFd_);
         if (controlFd_ >= 0) ::close(controlFd_);
         dataFd_ = controlFd_ = -1;
@@ -389,12 +396,6 @@ namespace irplay {
         }
     }
 
-    void AudioStream::resetBuffer() {
-        for (auto& s : slots_) { s.used = false; s.data.clear(); }
-        buffered_ = 0;
-        gapSinceMs_ = 0;
-    }
-
     void AudioStream::requestResend(uint16_t first, uint16_t count) {
         if (remoteControl_.sin6_port == 0 || count == 0) return;
         // Richiesta di ritrasmissione AirPlay: 0x80 0xD5, contatore, primo mancante, quanti.
@@ -406,84 +407,35 @@ namespace irplay {
                  reinterpret_cast<const sockaddr*>(&remoteControl_), sizeof remoteControl_);
     }
 
-    void AudioStream::insert(uint16_t seq, uint32_t rtp, const uint8_t* payload, size_t len) {
-        if (!haveSeq_) { haveSeq_ = true; expected_ = seq; }
-        const auto delta = static_cast<int16_t>(seq - expected_);
-        if (delta < 0) {
-            if (delta > -1000) return;          // duplicato o arrivato dopo essere stato saltato
-            resetBuffer();                      // salto all'indietro grande: il flusso è ripartito
-            expected_ = seq;
-        } else if (delta >= static_cast<int>(kSlots)) {
-            resetBuffer();                      // troppo avanti: si riparte da qui
-            expected_ = seq;
-        }
-        Slot& slot = slots_[seq % kSlots];
-        if (slot.used) return;                  // stesso pacchetto ricevuto due volte
-        slot.used = true;
-        slot.seq = seq;
-        slot.rtp = rtp;
-        slot.data.assign(payload, payload + len);
-        ++buffered_;
-    }
-
     void AudioStream::drain(int64_t now) {
+        const uint8_t* data = nullptr;
+        size_t len = 0;
+        uint32_t a = 0, b = 0;
         for (;;) {
-            Slot& slot = slots_[expected_ % kSlots];
-            if (slot.used && slot.seq == expected_) {
-                deliver(slot.data.data(), slot.data.size(), slot.rtp);
-                slot.used = false;
-                slot.data.clear();
-                --buffered_;
-                ++expected_;
-                gapSinceMs_ = 0;
-                continue;
-            }
-            if (buffered_ == 0) return;
-            // Manca il pacchetto atteso ma ne sono arrivati di successivi.
-            uint16_t next = expected_;
-            for (size_t i = 1; i < kSlots; ++i) {
-                const auto s = static_cast<uint16_t>(expected_ + i);
-                if (slots_[s % kSlots].used && slots_[s % kSlots].seq == s) { next = s; break; }
-            }
-            if (next == expected_) { resetBuffer(); return; }   // stato incoerente: si svuota
-            if (gapSinceMs_ == 0) {
-                gapSinceMs_ = now;
-                const auto missing = static_cast<uint16_t>(next - expected_);
-                requestResend(expected_, missing < kMaxResend ? missing : kMaxResend);
-                ++statResendAsked_;
-                return;
-            }
-            if (now - gapSinceMs_ < kGapWaitMs) return;
-            statLost_ += static_cast<uint16_t>(next - expected_);
-            expected_ = next;                   // non è arrivato in tempo: si salta (un breve silenzio)
-            gapSinceMs_ = 0;
+            const int r = irplay_reorder_next(reorder_, now, &data, &len, &a, &b);
+            if (r == 1) deliver(data, len, a);
+            else if (r == 2) requestResend(static_cast<uint16_t>(a), static_cast<uint16_t>(b));
+            else return;
         }
     }
 
     void AudioStream::onRtp(uint8_t* buf, size_t len) {
-        if (len <= 12 || (buf[0] & 0xC0) != 0x80 || (buf[1] & 0x7F) != 0x60) return;
-        const uint16_t seq = be16(buf + 2);
-        const uint32_t rtp = be32(buf + 4);
+        uint16_t seq = 0;
+        uint32_t rtp = 0;
+        if (!irplay_rtp_header(buf, len, &seq, &rtp)) return;
         activity_ = monotonicMs();
         uint8_t* payload = buf + 12;
         const size_t n = len - 12;
         decryptor_.decrypt(payload, n);
 
         if (music_) {
-            insert(seq, rtp, payload, n);
+            irplay_reorder_insert(reorder_, seq, rtp, payload, n);
             drain(monotonicMs());
             return;
         }
         // Duplicazione schermo: AAC-ELD a bassa latenza, nessun riordino. Pacchetti duplicati o
-        // in ritardo producono solo un click: si scartano. Un salto all'indietro grande è un riavvio.
-        if (haveSeq_) {
-            const auto delta = static_cast<int16_t>(seq - lastSeq_);
-            if (delta <= 0 && delta > -1000) return;
-            if (delta > 1 && delta < 1000) statLost_ += static_cast<uint64_t>(delta - 1);
-        }
-        haveSeq_ = true;
-        lastSeq_ = seq;
-        deliver(payload, n, rtp);
+        // in ritardo producono solo un click: si scartano.
+        if (irplay_reorder_accept_live(reorder_, seq)) deliver(payload, n, rtp);
     }
 
     void AudioStream::run() {
@@ -491,15 +443,14 @@ namespace irplay {
         while (running_) {
             const int pending = flushSeq_.exchange(-2);
             if (pending != -2) {
-                resetBuffer();
+                irplay_reorder_flush(reorder_, pending);
                 haveFirst_ = false;   // dopo un salto il primo pacchetto è un nuovo riferimento
-                if (pending >= 0) { expected_ = static_cast<uint16_t>(pending); haveSeq_ = true; }
-                else haveSeq_ = false;
                 sink_.onAudioFlush();
             }
             pollfd p[2] = {{dataFd_, POLLIN, 0}, {controlFd_, POLLIN, 0}};
             // Con pacchetti in attesa si controlla più spesso, per saltare in tempo quelli persi.
-            const int timeout = buffered_ > 0 ? 20 : 250;
+            const size_t waiting = buffered();
+            const int timeout = waiting > 0 ? 20 : 250;
             if (::poll(p, 2, timeout) > 0) {
                 for (int i = 0; i < 2; ++i) {
                     if (!(p[i].revents & POLLIN)) continue;
@@ -509,20 +460,24 @@ namespace irplay {
                     if (n <= 0 || !net::sameHost(peer_, from)) continue;
                     if (i == 0) {
                         onRtp(buf, static_cast<size_t>(n));
-                    } else if (n > 4 + 12 && (buf[1] & 0x7F) == 0x56 && music_) {
+                        continue;
+                    }
+                    if (!music_) continue;
+                    uint32_t syncRtp = 0;
+                    const int kind = irplay_rtp_control(buf, static_cast<size_t>(n), &syncRtp);
+                    if (kind == 1) {
                         // Ritrasmissione: 4 byte di intestazione e poi il pacchetto RTP originale.
                         onRtp(buf + 4, static_cast<size_t>(n) - 4);
-                    }
-                    else if (n >= 20 && (buf[1] & 0x7F) == 0x54 && music_) {
-                        // Sincronizzazione (circa una al secondo): il frame RTP in buf[4..7] è
-                        // quello che iOS considera in uscita adesso. Da qui l'orario di ogni pacchetto.
+                    } else if (kind == 2) {
+                        // Sincronizzazione (circa una al secondo): il frame RTP indicato è quello
+                        // che iOS considera in uscita adesso. Da qui l'orario di ogni pacchetto.
                         syncAtMs_ = monotonicMs();
-                        syncRtp_ = be32(buf + 4);
+                        syncRtp_ = syncRtp;
                         haveSync_ = true;
                     }
                 }
             }
-            if (music_ && buffered_ > 0) drain(monotonicMs());
+            if (music_ && buffered() > 0) drain(monotonicMs());
         }
     }
 

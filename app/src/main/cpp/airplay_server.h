@@ -115,8 +115,9 @@ namespace irplay {
         bool handleReverse(ConnState& st, const RtspRequest& req, const std::string& sid);
         bool handlePlay(ConnState& st, const RtspRequest& req, const std::string& sid);
         void resetMediaPlayback(MediaState state);
-        bool startMedia(ConnState& st, const RtspRequest& req, const std::string& sid,
-                        const std::string& location, double startSec, double startFraction);
+        bool startMedia(ConnState& st, const RtspRequest& req, const std::string& sid, const std::string& uuid,
+                        const std::string& location, double startSec, double startFraction, bool fromInsert);
+        void sendCurrentItemLocked();
         bool handleAction(ConnState& st, const RtspRequest& req, const std::string& sid);
         bool handlePlaybackInfo(ConnState& st, const RtspRequest& req);
         bool mediaAuthorized(const ConnState& st);

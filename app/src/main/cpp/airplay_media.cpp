@@ -86,6 +86,15 @@ namespace irplay {
 
         constexpr size_t kMaxMediaProps = 32;
 
+        // Risposta di successo a /action: un plist con errorCode 0. Una risposta vuota non conferma
+        // a iOS il completamento delle operazioni sulla coda (UxPlay, PR 579).
+        std::vector<uint8_t> actionOkBody() {
+            plist::Dict r;
+            r.set("errorCode", 0);
+            const std::string xml = plist::toXml(r);
+            return {xml.begin(), xml.end()};
+        }
+
         // "/getProperty?selectedMediaArray" -> "selectedMediaArray"; vuoto se non è un nome valido.
         std::string_view propertyName(std::string_view uri) {
             const size_t q = uri.find('?');
@@ -133,6 +142,7 @@ namespace irplay {
         }
 
         struct PlayRequest {
+            std::string uuid;
             std::string location;
             double startSec = 0;
             double startFraction = -1;
@@ -145,6 +155,10 @@ namespace irplay {
             const plist::Value* loc = d ? d->find("Content-Location") : nullptr;
             if (!loc || !loc->asString()) return false;
             out.location = *loc->asString();
+            // Identificativo dell'elemento (formato UUID): iOS riconosce il video da questo.
+            if (const plist::Value* u = d->find("uuid"); u && u->asString() && validSessionId(*u->asString())) {
+                out.uuid = *u->asString();
+            }
             if (const double* s = asDouble(d->find("Start-Position-Seconds"))) {
                 if (std::isfinite(*s) && *s >= 0 && *s < 1e7) out.startSec = *s;
             } else if (const double* f = asDouble(d->find("Start-Position"))) {
@@ -345,6 +359,8 @@ namespace irplay {
                     }
                 } else if (it != mediaProps_.end()) {
                     r.set("value", it->second);
+                } else if (name == "selectedMediaArray") {
+                    r.set("value", plist::Array{});
                 }
             }
             keepOpen = sendResponse(fd, &req, 200, "OK", {{"Content-Type", kXmlPlist}}, xmlBody(r));
@@ -403,6 +419,29 @@ namespace irplay {
                rtsp::sendAllTimed(reverseFd_, body.data(), body.size(), 1000);
     }
 
+    /*
+     * "currentItemChanged": dopo playlistRemove + playlistInsert (YouTube cambia traccia audio)
+     * iOS segue il nuovo elemento solo dopo questo avviso; senza, resta in caricamento e non
+     * manda più comandi. Formato e momento (prima della richiesta di playlist) come UxPlay PR 579:
+     * niente "category", e nessun avviso per l'elemento tolto (con "itemRemoved" iOS smette di
+     * rispondere alle richieste di playlist).
+     */
+    void AirPlayServer::sendCurrentItemLocked() {
+        if (reverseFd_ < 0 || !media_ || media_->uuid.empty()) return;
+        plist::Dict item;
+        item.set("uuid", media_->uuid);
+        plist::Dict root;
+        root.set("sessionID", 1).set("type", "currentItemChanged").set("uuid", media_->uuid).set("itemCurrent", std::move(item));
+        const std::string body = plist::toXml(root);
+        const std::string head = "POST /event HTTP/1.1\r\nX-Apple-Session-ID: " + media_->sessionId +
+                                 "\r\nContent-Type: " + kXmlPlist + "\r\nContent-Length: " +
+                                 std::to_string(body.size()) + "\r\n\r\n";
+        if (!rtsp::sendAllTimed(reverseFd_, head.data(), head.size(), 1000) ||
+            !rtsp::sendAllTimed(reverseFd_, body.data(), body.size(), 1000)) {
+            LOGW("Avviso currentItemChanged non inviato");
+        }
+    }
+
     void AirPlayServer::sendEventLocked(const char* state) {
         if (reverseFd_ < 0 || !media_ || media_->lastEvent == state) return;
         plist::Dict root;
@@ -441,7 +480,7 @@ namespace irplay {
             std::lock_guard<std::mutex> lock(mediaMutex_);
             mediaProps_.clear();   // nuovo video: le proprietà del precedente non valgono più
         }
-        return startMedia(st, req, sid, play.location, play.startSec, play.startFraction);
+        return startMedia(st, req, sid, play.uuid, play.location, play.startSec, play.startFraction, false);
     }
 
     /*
@@ -449,8 +488,13 @@ namespace irplay {
      * traccia audio: playlistRemove del video attuale, playlistInsert dello stesso video con la
      * nuova lingua e subito dopo /scrub alla posizione raggiunta).
      */
-    bool AirPlayServer::startMedia(ConnState& st, const RtspRequest& req, const std::string& sid,
-                                   const std::string& location, double startSec, double startFraction) {
+    bool AirPlayServer::startMedia(ConnState& st, const RtspRequest& req, const std::string& sid, const std::string& uuid,
+                                   const std::string& location, double startSec, double startFraction, bool fromInsert) {
+        // Risposta di successo: vuota per /play, plist errorCode per /action (playlistInsert).
+        const auto ok = [&]() {
+            return fromInsert ? sendResponse(st.fd, &req, 200, "OK", {{"Content-Type", kXmlPlist}}, actionOkBody())
+                              : sendResponse(st.fd, &req, 200, "OK");
+        };
         const int fd = st.fd;
         PlayRequest play;
         play.location = location;
@@ -477,14 +521,16 @@ namespace irplay {
                 std::lock_guard<std::mutex> lock(mediaMutex_);
                 media_ = std::make_unique<MediaSession>();
                 media_->sessionId = sid;
+                media_->uuid = uuid;
                 media_->startSec = play.startSec;
                 media_->startFraction = play.startFraction;
                 media_->lastSeenMs = monotonicMs();
+                if (fromInsert) sendCurrentItemLocked();
             }
             LOGI("Video AirPlay: indirizzo diretto");
             resetMediaPlayback(MediaState::Loading);
             sink_->onMediaPlay(play.location, play.startSec, play.startFraction, {});
-            return sendResponse(fd, &req, 200, "OK");
+            return ok();
         }
 
         const auto prefix = hls::remotePrefixOf(play.location);
@@ -504,12 +550,16 @@ namespace irplay {
             }
             media_ = std::make_unique<MediaSession>();
             media_->sessionId = sid;
+            media_->uuid = uuid;
             media_->startSec = play.startSec;
             media_->startFraction = play.startFraction;
             media_->lastSeenMs = monotonicMs();
             media_->remotePrefix = *prefix;
             media_->pendingUrl = play.location;
             media_->fetching = true;
+            // Elemento inserito: l'avviso currentItemChanged parte quando le playlist sono arrivate.
+            // Mandato prima (come UxPlay PR 579), con iOS 27 la richiesta di playlist resta senza risposta.
+            media_->announceCurrent = fromInsert;
             sent = sendFcupLocked(play.location);
             if (!sent) media_.reset();
         }
@@ -519,7 +569,7 @@ namespace irplay {
         }
         LOGI("Video AirPlay HLS: chiedo le playlist all'iPhone");
         resetMediaPlayback(MediaState::Loading);
-        return sendResponse(fd, &req, 200, "OK");
+        return ok();
     }
 
     bool AirPlayServer::handleAction(ConnState& st, const RtspRequest& req, const std::string& sid) {
@@ -548,7 +598,7 @@ namespace irplay {
                 resetMediaPlayback(MediaState::Idle);
                 sink_->onMediaStop();
             }
-            return sendResponse(fd, &req, 200, "OK");
+            return sendResponse(fd, &req, 200, "OK", {{"Content-Type", kXmlPlist}}, actionOkBody());
         }
         if (*type == "playlistInsert") {
             const plist::Value* itemV = params->find("item");
@@ -556,10 +606,10 @@ namespace irplay {
             if (!parsePlayDict(itemV ? itemV->asDict() : nullptr, play)) {
                 return sendResponse(fd, &req, 400, "Bad Request");
             }
-            return startMedia(st, req, sid, play.location, play.startSec, play.startFraction);
+            return startMedia(st, req, sid, play.uuid, play.location, play.startSec, play.startFraction, true);
         }
         if (*type != "unhandledURLResponse") {
-            return sendResponse(fd, &req, 200, "OK");   // altri tipi: nessun effetto
+            return sendResponse(fd, &req, 200, "OK", {{"Content-Type", kXmlPlist}}, actionOkBody());   // altri tipi: nessun effetto
         }
 
         const plist::Value* urlV = params->find("FCUP_Response_URL");
@@ -619,6 +669,10 @@ namespace irplay {
                     }
                     ms->master.clear();
                     ms->mediaPlaylists.clear();
+                    if (ms->announceCurrent) {
+                        sendCurrentItemLocked();
+                        ms->announceCurrent = false;
+                    }
                     outcome = Outcome::Done;
                 }
             }
@@ -636,13 +690,13 @@ namespace irplay {
                 LOGW("Playlist HLS non valida o non disponibile: video annullato");
                 mediaState_ = static_cast<int>(MediaState::Idle);
                 sink_->onMediaStop();
-                return sendResponse(fd, &req, 200, "OK");
+                return sendResponse(fd, &req, 200, "OK", {{"Content-Type", kXmlPlist}}, actionOkBody());
             case Outcome::Next:
-                return sendResponse(fd, &req, 200, "OK");
+                return sendResponse(fd, &req, 200, "OK", {{"Content-Type", kXmlPlist}}, actionOkBody());
             case Outcome::Done:
                 LOGI("Playlist ricevute (%zu): avvio il lettore", playlists.size());
                 sink_->onMediaPlay(playUrl, startSec, startFraction, playlists);
-                return sendResponse(fd, &req, 200, "OK");
+                return sendResponse(fd, &req, 200, "OK", {{"Content-Type", kXmlPlist}}, actionOkBody());
         }
         return false;
     }
@@ -654,11 +708,25 @@ namespace irplay {
         const double dur = std::max(0.0, mediaDur_.load());
         const double pos = std::min(std::max(0.0, mediaPos_.load()), dur > 0 ? dur : 1e7);
         const bool ready = state == MediaState::Playing || state == MediaState::Paused;
+        std::string uuid;
+        bool available;
+        {
+            std::lock_guard<std::mutex> lock(mediaMutex_);
+            if (media_) uuid = media_->uuid;
+            // Nessun elemento, playlist ancora in arrivo o lettore che non conosce la durata: risposta
+            // vuota, come UxPlay. Con uno stato "non pronto, fermo" per l'elemento appena inserito,
+            // iOS abbandona la richiesta di playlist in corso.
+            available = media_ && !media_->fetching && !(state == MediaState::Loading && dur <= 0);
+        }
+        if (!available) return sendResponse(st.fd, &req, 200, "OK");
 
         plist::Dict loaded, seekable;
         loaded.set("duration", dur - pos).set("start", pos);
         seekable.set("duration", dur).set("start", 0.0);
         plist::Dict d;
+        // iOS riconosce l'elemento dall'uuid: dopo un playlistInsert prende queste informazioni
+        // come quelle del nuovo video.
+        if (!uuid.empty()) d.set("uuid", uuid);
         d.set("duration", dur)
                 .set("loadedTimeRanges", plist::Array{std::move(loaded)})
                 .set("playbackBufferEmpty", state == MediaState::Loading)

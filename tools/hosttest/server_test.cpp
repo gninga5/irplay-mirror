@@ -756,7 +756,9 @@ static void testMedia(const ReceiverInfo& info, const uint8_t seed[32]) {
     {
         auto act = [&](const char* type, plist::Dict params) {
             Bytes b = *plist::toBinary(plist::Dict().set("type", type).set("params", std::move(params)));
-            return rtsp(cmd, "POST", "/action", b, H + bp, HTTP).code;
+            Resp ar = rtsp(cmd, "POST", "/action", b, H + bp, HTTP);
+            if (ar.code == 200) CHECK(std::string(ar.body.begin(), ar.body.end()).find("<key>errorCode</key><integer>0</integer>") != std::string::npos);
+            return ar.code;
         };
         // proprietà impostate da iOS: restituite da getProperty, anche dopo playlistInsert
         const Bytes sel = *plist::toBinary(plist::Dict().set("value",
@@ -766,9 +768,12 @@ static void testMedia(const ReceiverInfo& info, const uint8_t seed[32]) {
         CHECK(act("playlistRemove", plist::Dict().set("item", plist::Dict().set("uuid", "A"))) == 200 && sink->waitFor("mstop"));
         CHECK(act("playlistInsert", plist::Dict().set("item", plist::Dict().set("uuid", "B")
                                                      .set("Content-Location", "file:///etc/passwd"))) == 400);
-        CHECK(act("playlistInsert", plist::Dict().set("item", plist::Dict().set("uuid", "52F668A9-95E4-43A1-9AE5-38C67B2BF41C")
+        const std::string newUuid = "52F668A9-95E4-43A1-9AE5-38C67B2BF41C";
+        CHECK(act("playlistInsert", plist::Dict().set("item", plist::Dict().set("uuid", newUuid)
                                                      .set("Content-Location", "mlhls://localhost/master.m3u8"))) == 200);
         CHECK(rtsp(cmd, "POST", "/scrub?position=169.25", {}, H, HTTP).code == 200);
+        r = rtsp(cmd, "GET", "/playback-info", {}, H, HTTP);
+        CHECK(r.code == 200 && r.body.empty());   // playlist in arrivo: risposta vuota
         CHECK(!sink->waitFor("mscrub", nullptr, 100));   // nessun lettore aperto: diventa la partenza
         for (int i = 0; i < 3; ++i) {
             std::string head, body;
@@ -778,7 +783,21 @@ static void testMedia(const ReceiverInfo& info, const uint8_t seed[32]) {
             const char* ok = "EVENT/1.0 200 OK\r\nContent-Length: 0\r\n\r\n"; send(rev, ok, strlen(ok), 0);
             answer(url, bodies[i], 200);
         }
+        // playlist arrivate: l'avviso che l'elemento inserito è il corrente
+        {
+            std::string head, body;
+            CHECK(readHttp(rev, head, body) && xmlString(body, "type") == "currentItemChanged" &&
+                  xmlString(body, "uuid") == newUuid && body.find("<key>itemCurrent</key>") != std::string::npos &&
+                  body.find("<key>category</key>") == std::string::npos);
+            const char* ok = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"; send(rev, ok, strlen(ok), 0);
+        }
         CHECK(sink->waitFor("mplay", &e) && std::string(e.a.begin(), e.a.end()) == "irplay-hls://local/master.m3u8" && e.f == 169.25f);
+        r = rtsp(cmd, "GET", "/playback-info", {}, H, HTTP);
+        CHECK(r.code == 200 && r.body.empty());   // lettore senza durata: risposta vuota, come UxPlay
+        server.updateMediaPlayback(169.25, 300.0, 1.0f, AirPlayServer::MediaState::Playing);
+        { std::string head, body; CHECK(readHttp(rev, head, body) && xmlString(body, "state") == "playing"); }
+        r = rtsp(cmd, "GET", "/playback-info", {}, H, HTTP);
+        { const std::string x(r.body.begin(), r.body.end()); CHECK(x.find("<key>uuid</key><string>" + newUuid + "</string>") != std::string::npos); }
         r = rtsp(cmd, "POST", "/getProperty?selectedMediaArray", {}, H, HTTP);
         { const std::string x(r.body.begin(), r.body.end());
           CHECK(r.code == 200 && x.find("<key>value</key><array>") != std::string::npos && x.find("<string>Italiano</string>") != std::string::npos); }

@@ -41,6 +41,8 @@ namespace irplay {
      */
     struct AirPlayServer::MediaSession {
         std::string sessionId;            // X-Apple-Session-ID dell'iPhone che ha chiesto /play
+        std::string uuid;                 // elemento (uuid di /play o di playlistInsert): iOS lo cerca in /playback-info
+        bool announceCurrent = false;     // playlistInsert: avviso currentItemChanged quando le playlist sono arrivate
         double startSec = 0;              // posizione iniziale in secondi (plist binario)
         double startFraction = -1;        // oppure frazione 0..1 della durata (forma testuale)
         int64_t lastSeenMs = 0;           // ultima richiesta con questo sessionId (watchdog)

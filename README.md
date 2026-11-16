@@ -70,7 +70,7 @@ and sideload it. With adb it takes a minute:
    That unlocks the developer options, where you turn on USB debugging (and network debugging,
    if your TV has it).
 2. From a computer on the same network, run `adb connect <tv-ip>:5555` and accept the prompt on the TV.
-3. `adb install iRPlay-Mirror-1.3.2.apk`
+3. `adb install iRPlay-Mirror-1.3.3.apk`
 
 You need Android TV or Google TV 9 or newer on an ARM chip, which is pretty much every TV and
 streaming stick out there. Amazon Fire TV sticks with Fire OS 7 or 8 should work too (sideload
@@ -108,10 +108,14 @@ else an evening:
 - On the reversed connection iOS doesn't only answer `HTTP/1.1 200 OK`: every 15 seconds or so
   it sends an empty `EVENT/1.0 200 OK`. Treat that as an error and close the connection, and the
   TV can no longer ask for playlists. That's what broke changing the audio track in YouTube, which
-  removes the video and inserts it again (`playlistRemove`, then `playlistInsert`). The new track
-  now plays, but the iPhone keeps showing a spinner and stops sending commands afterwards: it
-  waits for something from the receiver that I haven't been able to identify. Disconnecting and
-  reconnecting AirPlay gets the controls back, already on the new track.
+  removes the video and inserts it again (`playlistRemove`, then `playlistInsert`).
+- After that insert, the iPhone only follows the new video once the receiver sends a
+  `currentItemChanged` event (`sessionID`, `type`, `uuid`, `itemCurrent`; no `category`). Without
+  it the phone keeps a spinner and stops sending commands. UxPlay sends it *before* asking for the
+  new playlists ([PR 579](https://github.com/FDH2/UxPlay/pull/579)); with iOS 27.2 that makes the
+  phone ignore the playlist request, so here it goes out *after* the playlists have arrived.
+  `/action` replies carry an `errorCode` plist, `/playback-info` names the current item's `uuid`
+  and stays empty while the item isn't ready yet. Tested with iOS 27.2 and the YouTube app.
 - The `0x80` bit in the mDNS `flags` record means "password required". Set it by mistake and
   iOS 27 asks for a PIN, then gives up.
 - In pause, iOS closes the audio stream and reopens it when you resume, while the session stays

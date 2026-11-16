@@ -73,7 +73,7 @@ e installalo a mano. Con adb ci vuole un minuto:
    (e il debug di rete, se la tua TV lo ha).
 2. Da un computer sulla stessa rete esegui `adb connect <ip-della-tv>:5555` e accetta la richiesta
    che compare sulla TV.
-3. `adb install iRPlay-Mirror-1.3.2.apk`
+3. `adb install iRPlay-Mirror-1.3.3.apk`
 
 Serve Android TV o Google TV 9 o successivi su processore ARM, cioè praticamente qualsiasi TV
 o chiavetta in commercio. Dovrebbero andare anche le chiavette Amazon Fire TV con Fire OS 7 o 8
@@ -113,10 +113,15 @@ altro risparmiano una serata.
 - Sulla connessione "rovesciata" iOS non risponde solo `HTTP/1.1 200 OK`: ogni 15 secondi circa
   manda un `EVENT/1.0 200 OK` vuoto. Se lo tratti come un errore e chiudi la connessione, la TV non
   può più chiedere le playlist. È questo che bloccava il cambio di traccia audio in YouTube, che
-  toglie il video e lo reinserisce (`playlistRemove`, poi `playlistInsert`). Ora la nuova traccia
-  parte, ma dopo l'iPhone resta con la rotellina e non manda più comandi: aspetta qualcosa dal
-  ricevitore che non sono ancora riuscito a capire. Scollegare e ricollegare AirPlay restituisce
-  i comandi, già sulla nuova traccia.
+  toglie il video e lo reinserisce (`playlistRemove`, poi `playlistInsert`).
+- Dopo quel reinserimento l'iPhone segue il nuovo video solo quando il ricevitore manda l'evento
+  `currentItemChanged` (`sessionID`, `type`, `uuid`, `itemCurrent`; niente `category`). Senza,
+  il telefono resta con la rotellina e non manda più comandi. UxPlay lo manda *prima* di chiedere
+  le nuove playlist ([PR 579](https://github.com/FDH2/UxPlay/pull/579)); con iOS 27.2 così il
+  telefono ignora la richiesta di playlist, quindi qui parte *dopo* che le playlist sono arrivate.
+  Le risposte a `/action` contengono un plist `errorCode`, `/playback-info` indica l'`uuid`
+  dell'elemento corrente e resta vuoto finché l'elemento non è pronto. Provato con iOS 27.2 e
+  l'app YouTube.
 - Il bit `0x80` nel campo `flags` dell'annuncio mDNS significa "password richiesta". Se lo metti
   per sbaglio, iOS 27 chiede un PIN e poi rinuncia.
 - In pausa iOS chiude il flusso audio e lo riapre alla ripresa, mentre la sessione resta aperta.

@@ -77,7 +77,7 @@ e installalo a mano. Con adb ci vuole un minuto:
    (e il debug di rete, se la tua TV lo ha).
 2. Da un computer sulla stessa rete esegui `adb connect <ip-della-tv>:5555` e accetta la richiesta
    che compare sulla TV.
-3. `adb install iRPlay-Mirror-1.5.0.apk`
+3. `adb install iRPlay-Mirror-1.6.0.apk`
 
 Serve Android TV o Google TV 9 o successivi su processore ARM, cioè praticamente qualsiasi TV
 o chiavetta in commercio. Dovrebbero andare anche le chiavette Amazon Fire TV con Fire OS 7 o 8

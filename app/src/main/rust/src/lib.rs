@@ -12,16 +12,22 @@
 #![warn(missing_docs)]
 
 pub mod alac;
+pub mod dmap;
+pub mod ffi;
 pub mod hevc;
+pub mod hls;
+pub mod plist;
+pub mod rtsp;
+pub mod text;
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 /// Versione dell'interfaccia C. Il C++ la controlla all'avvio: se non coincide con quella
 /// che si aspetta, la libreria Rust è di un'altra build e non va usata.
-pub const ABI_VERSION: u32 = 3;
+pub const ABI_VERSION: u32 = 4;
 
 /// Esegue `f` intercettando un eventuale panic: in quel caso restituisce `fallback`.
-fn guard<T>(fallback: T, f: impl FnOnce() -> T) -> T {
+pub(crate) fn guard<T>(fallback: T, f: impl FnOnce() -> T) -> T {
     catch_unwind(AssertUnwindSafe(f)).unwrap_or(fallback)
 }
 
@@ -197,7 +203,7 @@ mod tests {
 
     #[test]
     fn abi_version_is_stable() {
-        assert_eq!(irplay_rust_abi_version(), 3);
+        assert_eq!(irplay_rust_abi_version(), 4);
     }
 
     #[test]

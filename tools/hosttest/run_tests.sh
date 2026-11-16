@@ -63,6 +63,14 @@ clang++ -std=c++20 -Wall -Wextra -Werror -fsanitize=address,undefined -g -I"$C" 
 ./sps_test
 swiftc -O "$HERE/vt_check.swift" -o vt_check 2>/dev/null && ./vt_check
 
+# Parser di rete (plist, DMAP, RTSP, HLS): Rust contro la versione C++ di riferimento
+# (tools/hosttest/reference), su input generati e alterati. Devono coincidere in tutto.
+clang++ -std=c++20 -Wall -Wextra -Wformat=2 -Werror -Wno-missing-field-initializers \
+  -fsanitize=address,undefined -fno-omit-frame-pointer -g -O1 -I"$C" -I"$HERE/reference" \
+  "$HERE/parser_diff.cpp" "$HERE"/reference/*.cpp "$C/plist_reader.cpp" "$C/plist_writer.cpp" "$C/now_playing.cpp" \
+  "$C/hls_playlist.cpp" "$C/rtsp_message.cpp" "$C/net_util.cpp" "$RUSTLIB" -o "$OUT/parser_diff"
+UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 "$OUT/parser_diff" "${IRPLAY_DIFF_ITERS:-300000}"
+
 # HEVC (rust/src/hevc.rs): flussi generati con VideoToolbox, con e senza riordino e in 4K.
 # I parametri riscritti devono dare immagini identiche agli originali, e fotogrammi chiave e
 # B-slice riconosciuti devono coincidere con quanto dichiara l'encoder.

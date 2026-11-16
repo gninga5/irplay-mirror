@@ -178,7 +178,11 @@ cd -
 Serve anche Rust: installa `rustup`, e la compilazione prende da sola il compilatore indicato in
 `app/src/main/rust/rust-toolchain.toml` (con i target Android). Una parte del motore nativo sta
 passando da C++ a Rust, a cominciare dal codice che legge i dati dalla rete; quella parte la
-compila Cargo e finisce nella stessa libreria nativa.
+compila Cargo e finisce nella stessa libreria nativa. Sono già in Rust i parser dei plist
+binari, dei messaggi RTSP/HTTP, dei metadati DMAP e delle playlist HLS, la gestione di HEVC e
+il decoder ALAC. I vecchi parser C++ restano in `tools/hosttest/reference` solo come metro di
+paragone: `parser_diff` dà a entrambi milioni di input generati e alterati e si ferma alla
+prima differenza.
 
 Il passaggio di mbedTLS va fatto una volta sola; la compilazione con Gradle non ha bisogno di
 Python. libsodium è già pronta come AAR in `app/libs`, compilata dai sorgenti ufficiali con

@@ -29,8 +29,17 @@ object MediaCast {
             get() = url.startsWith(LOCAL_SCHEME) || android.net.Uri.parse(url).path?.endsWith(".m3u8") == true
     }
 
+    /**
+     * Tracce scelte nell'app dell'iPhone (selectedMediaArray). Arriva subito dopo /play e a ogni
+     * cambio: resta valida anche tra la rimozione e il reinserimento dello stesso video.
+     */
+    data class Tracks(val audioLanguage: String = "", val textLanguage: String = "", val textEnabled: Boolean = false)
+
+    @Volatile var tracks = Tracks()
+
     /** Comandi dell'iPhone. Arrivano da thread nativi: chi li implementa passa al main thread. */
     interface Controller {
+        fun onMediaTracks(tracks: Tracks)
         fun onMediaRequest(request: Request)
         fun onMediaRate(rate: Float)
         fun onMediaScrub(positionMs: Long)

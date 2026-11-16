@@ -70,7 +70,7 @@ and sideload it. With adb it takes a minute:
    That unlocks the developer options, where you turn on USB debugging (and network debugging,
    if your TV has it).
 2. From a computer on the same network, run `adb connect <tv-ip>:5555` and accept the prompt on the TV.
-3. `adb install iRPlay-Mirror-1.3.3.apk`
+3. `adb install iRPlay-Mirror-1.3.4.apk`
 
 You need Android TV or Google TV 9 or newer on an ARM chip, which is pretty much every TV and
 streaming stick out there. Amazon Fire TV sticks with Fire OS 7 or 8 should work too (sideload
@@ -116,6 +116,10 @@ else an evening:
   phone ignore the playlist request, so here it goes out *after* the playlists have arrived.
   `/action` replies carry an `errorCode` plist, `/playback-info` names the current item's `uuid`
   and stays empty while the item isn't ready yet. Tested with iOS 27.2 and the YouTube app.
+- The phone also reports the chosen tracks in `selectedMediaArray` (`soun` for audio, `sbtl`/`clcp`
+  for subtitles, with a language tag), and the TV turns them into player preferences. YouTube
+  itself never puts subtitles in what it casts: it switches captions off as soon as AirPlay
+  starts, and the playlist has no subtitle tracks at all. Screen mirroring shows them.
 - The `0x80` bit in the mDNS `flags` record means "password required". Set it by mistake and
   iOS 27 asks for a PIN, then gives up.
 - In pause, iOS closes the audio stream and reopens it when you resume, while the session stays

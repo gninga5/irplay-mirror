@@ -13,6 +13,7 @@
 package com.irplay.tv.ui
 
 import android.content.Intent
+import android.graphics.Color
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -33,6 +34,8 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.ui.CaptionStyleCompat
+import androidx.media3.ui.SubtitleView
 import androidx.media3.ui.PlayerView
 import com.irplay.tv.R
 import com.irplay.tv.core.MediaCast
@@ -88,6 +91,16 @@ class VideoActivity : AppCompatActivity(), MediaCast.Controller {
         // Un solo video alla volta: "precedente" e "successivo" non avrebbero effetto.
         playerView.setShowPreviousButton(false)
         playerView.setShowNextButton(false)
+        // Sottotitoli leggibili dal divano: bianco con bordo nero, un po' più grandi del normale.
+        // Lo stile del video (colori, dimensioni) è ignorato, la posizione no.
+        playerView.subtitleView?.apply {
+            setStyle(CaptionStyleCompat(Color.WHITE, Color.TRANSPARENT, Color.TRANSPARENT,
+                CaptionStyleCompat.EDGE_TYPE_OUTLINE, Color.BLACK, null))
+            setFractionalTextSize(SubtitleView.DEFAULT_TEXT_SIZE_FRACTION * SUBTITLE_SCALE)
+            setApplyEmbeddedStyles(false)
+            setApplyEmbeddedFontSizes(false)
+        }
+        applyTracks(MediaCast.tracks)
 
         MediaCast.controller = this
         MediaCast.current?.let { load(it) } ?: finish()
@@ -231,6 +244,26 @@ class VideoActivity : AppCompatActivity(), MediaCast.Controller {
         main.post { if (!isFinishing) load(request) }
     }
 
+    override fun onMediaTracks(tracks: MediaCast.Tracks) {
+        main.post { if (!isFinishing) applyTracks(tracks) }
+    }
+
+    /**
+     * Le scelte dell'iPhone diventano preferenze del lettore: ExoPlayer sceglie fra le tracce
+     * della playlist (YouTube vi mette audio e sottotitoli WebVTT di ogni lingua) quella che
+     * corrisponde. Sottotitoli spenti = tipo di traccia disattivato.
+     */
+    private fun applyTracks(tracks: MediaCast.Tracks) {
+        val b = player.trackSelectionParameters.buildUpon()
+        if (tracks.audioLanguage.isNotEmpty()) b.setPreferredAudioLanguage(tracks.audioLanguage)
+        b.setTrackTypeDisabled(C.TRACK_TYPE_TEXT, !tracks.textEnabled)
+        if (tracks.textEnabled) {
+            b.setPreferredTextLanguage(tracks.textLanguage.ifEmpty { null })
+            b.setSelectUndeterminedTextLanguage(true)
+        }
+        player.trackSelectionParameters = b.build()
+    }
+
     override fun onMediaRate(rate: Float) {
         main.post { player.playWhenReady = rate > 0f }
     }
@@ -257,6 +290,7 @@ class VideoActivity : AppCompatActivity(), MediaCast.Controller {
         private const val HTTP_TIMEOUT_MS = 15_000
         private const val CONTROLLER_TIMEOUT_MS = 3000
         private const val ERROR_CLOSE_MS = 4000L
+        private const val SUBTITLE_SCALE = 1.2f
 
         // Valori di AirPlayServer::MediaState (C++).
         private const val STATE_LOADING = 1

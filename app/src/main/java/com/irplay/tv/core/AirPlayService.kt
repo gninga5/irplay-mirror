@@ -510,6 +510,12 @@ class AirPlayService : Service() {
             if (positionSec.isFinite() && positionSec >= 0) MediaCast.controller?.onMediaScrub((positionSec * 1000).toLong())
         }
 
+        override fun onMediaTracks(audioLanguage: String, textLanguage: String, textEnabled: Boolean) {
+            val tracks = MediaCast.Tracks(audioLanguage, textLanguage, textEnabled)
+            MediaCast.tracks = tracks
+            MediaCast.controller?.onMediaTracks(tracks)
+        }
+
         override fun onMediaStop() {
             MediaCast.clear()
             MediaCast.controller?.onMediaStop()

@@ -80,6 +80,8 @@ object NativeBridge {
         fun onMediaRate(rate: Float)
         fun onMediaScrub(positionSec: Double)
         fun onMediaStop()
+        /** Tracce scelte sull'iPhone: lingua audio e sottotitoli ("" = nessuna preferenza). */
+        fun onMediaTracks(audioLanguage: String, textLanguage: String, textEnabled: Boolean)
     }
 
     const val END_TEARDOWN = 0
@@ -235,6 +237,11 @@ object NativeBridge {
 
     @JvmStatic
     fun onMediaStop() = guarded("video AirPlay") { mediaListener?.onMediaStop() }
+
+    @JvmStatic
+    fun onMediaTracks(audioLanguage: String, textLanguage: String, textEnabled: Boolean) = guarded("video AirPlay") {
+        mediaListener?.onMediaTracks(audioLanguage, textLanguage, textEnabled)
+    }
 
     @JvmStatic
     fun onRemoteControl(dacpId: String, activeRemote: String, peerAddr: String) = guarded("telecomando") {

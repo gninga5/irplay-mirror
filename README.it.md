@@ -73,7 +73,7 @@ e installalo a mano. Con adb ci vuole un minuto:
    (e il debug di rete, se la tua TV lo ha).
 2. Da un computer sulla stessa rete esegui `adb connect <ip-della-tv>:5555` e accetta la richiesta
    che compare sulla TV.
-3. `adb install iRPlay-Mirror-1.3.3.apk`
+3. `adb install iRPlay-Mirror-1.3.4.apk`
 
 Serve Android TV o Google TV 9 o successivi su processore ARM, cioè praticamente qualsiasi TV
 o chiavetta in commercio. Dovrebbero andare anche le chiavette Amazon Fire TV con Fire OS 7 o 8
@@ -122,6 +122,11 @@ altro risparmiano una serata.
   Le risposte a `/action` contengono un plist `errorCode`, `/playback-info` indica l'`uuid`
   dell'elemento corrente e resta vuoto finché l'elemento non è pronto. Provato con iOS 27.2 e
   l'app YouTube.
+- Il telefono comunica anche le tracce scelte in `selectedMediaArray` (`soun` per l'audio,
+  `sbtl`/`clcp` per i sottotitoli, con la lingua), e la TV le trasforma in preferenze del lettore.
+  YouTube però non mette mai i sottotitoli in ciò che trasmette: li spegne appena parte AirPlay,
+  e la playlist non contiene nessuna traccia di sottotitoli. Con la duplicazione dello schermo
+  invece si vedono.
 - Il bit `0x80` nel campo `flags` dell'annuncio mDNS significa "password richiesta". Se lo metti
   per sbaglio, iOS 27 chiede un PIN e poi rinuncia.
 - In pausa iOS chiude il flusso audio e lo riapre alla ripresa, mentre la sessione resta aperta.

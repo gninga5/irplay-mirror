@@ -86,6 +86,51 @@ namespace irplay {
 
         constexpr size_t kMaxMediaProps = 32;
 
+        // Tag di lingua BCP 47 ("it", "pt-BR", "en-US"): solo lettere, cifre e '-', al massimo 35.
+        bool validLanguageTag(const std::string& s) {
+            if (s.empty() || s.size() > 35) return false;
+            for (char c : s) if (!std::isalnum(static_cast<unsigned char>(c)) && c != '-') return false;
+            return true;
+        }
+
+        struct TrackChoice {
+            std::string audio, text;
+            bool textEnabled = false;
+        };
+
+        /*
+         * selectedMediaArray: un elemento per gruppo di tracce scelto sull'iPhone, con
+         * MediaSelectionGroupMediaType "soun" (audio), "sbtl" (sottotitoli) o "clcp" (sottotitoli
+         * per non udenti) e la lingua in MediaSelectionOptionsExtendedLanguageTag (o, nei mittenti
+         * che non la mettono, MediaSelectionOptionsUnicodeLanguageIdentifier).
+         * Nessun elemento di sottotitoli = sottotitoli spenti.
+         */
+        TrackChoice parseTrackChoice(const plist::Value& value) {
+            TrackChoice c;
+            const plist::Array* arr = value.asArray();
+            if (!arr) return c;
+            for (const auto& item : *arr) {
+                const plist::Dict* d = item.asDict();
+                if (!d) continue;
+                const plist::Value* typeV = d->find("MediaSelectionGroupMediaType");
+                const std::string* type = typeV ? typeV->asString() : nullptr;
+                if (!type) continue;
+                std::string lang;
+                for (const char* key : {"MediaSelectionOptionsExtendedLanguageTag", "MediaSelectionOptionsUnicodeLanguageIdentifier"}) {
+                    const plist::Value* v = d->find(key);
+                    if (v && v->asString() && validLanguageTag(*v->asString())) { lang = *v->asString(); break; }
+                }
+                for (char& ch : lang) if (ch == '_') ch = '-';
+                if (*type == "soun") {
+                    c.audio = lang;
+                } else if (*type == "sbtl" || *type == "clcp") {
+                    c.textEnabled = true;
+                    c.text = lang;
+                }
+            }
+            return c;
+        }
+
         // Risposta di successo a /action: un plist con errorCode 0. Una risposta vuota non conferma
         // a iOS il completamento delle operazioni sulla coda (UxPlay, PR 579).
         std::vector<uint8_t> actionOkBody() {
@@ -345,6 +390,8 @@ namespace irplay {
             // resta in caricamento e smette di chiedere lo stato.
             plist::Dict r;
             r.set("errorCode", 0);
+            TrackChoice tracks;
+            bool haveTracks = false;
             const std::string_view name = propertyName(req.uri);
             if (!name.empty()) {
                 std::lock_guard<std::mutex> lock(mediaMutex_);
@@ -356,12 +403,22 @@ namespace irplay {
                     if (v) {
                         if (it != mediaProps_.end()) it->second = *v;
                         else if (mediaProps_.size() < kMaxMediaProps) mediaProps_.emplace_back(std::string(name), *v);
+                        if (name == "selectedMediaArray") {
+                            tracks = parseTrackChoice(*v);
+                            haveTracks = true;
+                        }
                     }
                 } else if (it != mediaProps_.end()) {
                     r.set("value", it->second);
                 } else if (name == "selectedMediaArray") {
                     r.set("value", plist::Array{});
                 }
+            }
+            if (haveTracks) {
+                // Lingue e stato dei sottotitoli: dato non personale, utile per capire cosa manda l'app.
+                LOGI("Tracce scelte sull'iPhone: audio %s, sottotitoli %s%s", tracks.audio.empty() ? "-" : tracks.audio.c_str(),
+                     tracks.textEnabled ? "attivi " : "spenti", tracks.textEnabled ? (tracks.text.empty() ? "-" : tracks.text.c_str()) : "");
+                sink_->onMediaTracks(tracks.audio, tracks.text, tracks.textEnabled);
             }
             keepOpen = sendResponse(fd, &req, 200, "OK", {{"Content-Type", kXmlPlist}}, xmlBody(r));
             return true;

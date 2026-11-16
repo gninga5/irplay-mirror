@@ -88,6 +88,12 @@ namespace irplay {
         virtual void onMediaScrub(double positionSec) = 0;
         /** L'iPhone ha chiuso il video (o è sparito): il lettore va fermato. */
         virtual void onMediaStop() = 0;
+        /**
+         * Tracce scelte sull'iPhone (selectedMediaArray): lingua dell'audio e dei sottotitoli come
+         * tag BCP 47 ("it", "en-US"; vuoto = nessuna preferenza) e sottotitoli attivi o no.
+         * Valori già controllati: solo lettere, cifre e '-'.
+         */
+        virtual void onMediaTracks(const std::string& audioLanguage, const std::string& textLanguage, bool textEnabled) = 0;
     };
 
 } // namespace irplay

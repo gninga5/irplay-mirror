@@ -38,7 +38,7 @@ namespace {
             gOnVideoFrame, gOnAudioStarted, gOnAudioStopped, gOnAudioFrame, gOnVolume, gOnRemoteControl,
             gOnPinRequested, gOnPinDismissed, gOnClientTrusted,
             gOnAudioFlush, gOnMetadata, gOnArtwork, gOnProgress,
-            gOnMediaPlay, gOnMediaRate, gOnMediaScrub, gOnMediaStop;
+            gOnMediaPlay, gOnMediaRate, gOnMediaScrub, gOnMediaStop, gOnMediaTracks;
     jclass gByteArrayClass = nullptr;   // global ref a byte[], per gli array di playlist
 
     std::mutex gServerMutex;                       // start e stop possono arrivare da thread Kotlin diversi
@@ -233,6 +233,18 @@ namespace {
         void onMediaScrub(double positionSec) override { callVoid(gOnMediaScrub, static_cast<jdouble>(positionSec)); }
         void onMediaStop() override { callVoid(gOnMediaStop); }
 
+        void onMediaTracks(const std::string& audioLanguage, const std::string& textLanguage, bool textEnabled) override {
+            JNIEnv* env = currentEnv();
+            if (!env) return;
+            // ASCII già controllato in C++: modified UTF-8 coincide.
+            jstring a = env->NewStringUTF(audioLanguage.c_str());
+            jstring t = env->NewStringUTF(textLanguage.c_str());
+            if (a && t) env->CallStaticVoidMethod(gBridge, gOnMediaTracks, a, t, static_cast<jboolean>(textEnabled));
+            if (a) env->DeleteLocalRef(a);
+            if (t) env->DeleteLocalRef(t);
+            clearException(env);
+        }
+
     private:
         template <typename... Args>
         void callVoid(jmethodID m, Args... args) {
@@ -313,7 +325,8 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void*) {
                     && resolve(env, gOnMediaPlay, "onMediaPlay", "([BDD[[B[[B)V")
                     && resolve(env, gOnMediaRate, "onMediaRate", "(F)V")
                     && resolve(env, gOnMediaScrub, "onMediaScrub", "(D)V")
-                    && resolve(env, gOnMediaStop, "onMediaStop", "()V");
+                    && resolve(env, gOnMediaStop, "onMediaStop", "()V")
+                    && resolve(env, gOnMediaTracks, "onMediaTracks", "(Ljava/lang/String;Ljava/lang/String;Z)V");
     return ok ? JNI_VERSION_1_6 : JNI_ERR;
 }
 

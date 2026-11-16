@@ -88,6 +88,9 @@ public:
     void onMediaRate(float r) override { Event e{"mrate"}; e.f = r; push(e); }
     void onMediaScrub(double p) override { Event e{"mscrub"}; e.f = (float) p; push(e); }
     void onMediaStop() override { push({"mstop"}); }
+    void onMediaTracks(const std::string& a, const std::string& t, bool on) override {
+        std::string v = a + "|" + t; Event e{"mtracks", Bytes(v.begin(), v.end())}; e.flag = on; push(e);
+    }
     void onRemoteControl(const std::string& id, const std::string& token, const std::string& peer) override {
         std::string v = id + "|" + token + "|" + peer; push({"remote", Bytes(v.begin(), v.end())});
     }
@@ -762,8 +765,23 @@ static void testMedia(const ReceiverInfo& info, const uint8_t seed[32]) {
         };
         // proprietà impostate da iOS: restituite da getProperty, anche dopo playlistInsert
         const Bytes sel = *plist::toBinary(plist::Dict().set("value",
-            plist::Array{plist::Dict().set("MediaSelectionOptionsName", "Italiano").set("MediaSelectionOptionsUnicodeLanguageIdentifier", "it")}));
+            plist::Array{plist::Dict().set("MediaSelectionGroupMediaType", "soun").set("MediaSelectionOptionsName", "Italiano").set("MediaSelectionOptionsUnicodeLanguageIdentifier", "it")}));
         CHECK(rtsp(cmd, "PUT", "/setProperty?selectedMediaArray", sel, H + bp, HTTP).code == 200);
+        CHECK(sink->waitFor("mtracks", &e) && std::string(e.a.begin(), e.a.end()) == "it|" && !e.flag);
+        // audio e sottotitoli (sbtl), poi solo audio = sottotitoli spenti; lingue non valide scartate
+        {
+            const Bytes both = *plist::toBinary(plist::Dict().set("value", plist::Array{
+                plist::Dict().set("MediaSelectionGroupMediaType", "soun").set("MediaSelectionOptionsExtendedLanguageTag", "it-IT"),
+                plist::Dict().set("MediaSelectionGroupMediaType", "sbtl").set("MediaSelectionOptionsExtendedLanguageTag", "en")}));
+            CHECK(rtsp(cmd, "PUT", "/setProperty?selectedMediaArray", both, H + bp, HTTP).code == 200);
+            CHECK(sink->waitFor("mtracks", &e) && std::string(e.a.begin(), e.a.end()) == "it-IT|en" && e.flag);
+            const Bytes bad = *plist::toBinary(plist::Dict().set("value", plist::Array{
+                plist::Dict().set("MediaSelectionGroupMediaType", "sbtl").set("MediaSelectionOptionsExtendedLanguageTag", "en\"><x")}));
+            CHECK(rtsp(cmd, "PUT", "/setProperty?selectedMediaArray", bad, H + bp, HTTP).code == 200);
+            CHECK(sink->waitFor("mtracks", &e) && std::string(e.a.begin(), e.a.end()) == "|" && e.flag);
+            CHECK(rtsp(cmd, "PUT", "/setProperty?selectedMediaArray", sel, H + bp, HTTP).code == 200);
+            CHECK(sink->waitFor("mtracks", &e) && !e.flag);
+        }
         CHECK(rtsp(cmd, "PUT", "/setProperty?../../x", sel, H + bp, HTTP).code == 200);   // nome non valido: ignorato
         CHECK(act("playlistRemove", plist::Dict().set("item", plist::Dict().set("uuid", "A"))) == 200 && sink->waitFor("mstop"));
         CHECK(act("playlistInsert", plist::Dict().set("item", plist::Dict().set("uuid", "B")

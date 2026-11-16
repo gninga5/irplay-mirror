@@ -36,6 +36,7 @@
 #include "log.h"
 #include "media_streams.h"
 #include "net_util.h"
+#include "rust_core.h"
 #include "now_playing.h"
 #include "plist_reader.h"
 
@@ -687,6 +688,12 @@ namespace irplay {
         running_ = true;
         acceptThread_ = std::thread(&AirPlayServer::acceptLoop, this);
         LOGI("Server RTSP in ascolto sulla porta %u", port);
+        // Il componente Rust deve venire dalla stessa build: interfaccia C con la stessa versione.
+        if (irplay_rust_abi_version() != kRustAbiVersion) {
+            LOGE("Componente Rust con interfaccia %u, attesa %u", irplay_rust_abi_version(), kRustAbiVersion);
+        } else {
+            LOGI("Componente Rust attivo (interfaccia %u)", kRustAbiVersion);
+        }
         return port;
     }
 

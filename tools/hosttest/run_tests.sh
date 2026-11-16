@@ -32,6 +32,18 @@ for f in ag_enc ag_dec dp_enc matrix_enc ALACBitUtilities EndianPortable; do
 done
 clang++ -std=c++17 -c -w -fsanitize=address -g -O1 -I"$HERE/alac_enc" "$HERE/alac_enc/ALACEncoder.cpp" -o "$OUT/alacenc_ALACEncoder.o"
 
+# Componente Rust: test Rust, poi la libreria statica per il Mac da collegare ai test C++.
+RUSTDIR="$ROOT/app/src/main/rust"
+CARGO=$(command -v cargo || true)
+for c in "$HOME/.cargo/bin/cargo" /opt/homebrew/opt/rustup/bin/cargo; do
+  [ -z "$CARGO" ] && [ -x "$c" ] && CARGO="$c"
+done
+[ -n "$CARGO" ] || { echo "cargo non trovato: installare Rust (rustup)" >&2; exit 1; }
+export PATH="$(dirname "$CARGO"):$PATH"   # i proxy di rustup cercano rustc nel PATH
+(cd "$RUSTDIR" && CARGO_TARGET_DIR="$OUT/rust-target" "$CARGO" test --release --locked -q 2>&1 | grep -E "test result|FAILED|panicked" ) || true
+(cd "$RUSTDIR" && CARGO_TARGET_DIR="$OUT/rust-target" "$CARGO" build --release --locked -q)
+RUSTLIB="$OUT/rust-target/release/libirplay_core.a"
+
 # Decoder ALAC dell'app: FFmpeg compilato per il Mac con lo stesso script dell'app.
 FF="$OUT/ffmpeg"
 [ -f "$FF/lib/libavcodec.a" ] || FFMPEG_WORK="$ROOT/build/ffmpeg" "$ROOT/tools/build_ffmpeg.sh" host "$FF"
@@ -39,7 +51,7 @@ SRC="$C/alac_decoder.cpp $C/now_playing.cpp $C/srp_server.cpp $C/sps_rewriter.cp
 clang++ -std=c++20 -Wall -Wextra -Wformat=2 -Werror -Wno-missing-field-initializers \
   -fsanitize=address,undefined -fno-omit-frame-pointer -g -O1 \
   -I"$C" -I"$P" -I"$M/include" -I"$SODIUM/include" -I"$FF/include" -I"$HERE/alac_enc" \
-  "$HERE/server_test.cpp" $SRC "$OUT"/pf_*.o "$OUT"/alacenc_*.o "$FF/lib/libavcodec.a" "$FF/lib/libavutil.a" "$OUT/mbed/library/libmbedcrypto.a" "$SODIUM/lib/libsodium.a" \
+  "$HERE/server_test.cpp" $SRC "$OUT"/pf_*.o "$OUT"/alacenc_*.o "$FF/lib/libavcodec.a" "$FF/lib/libavutil.a" "$RUSTLIB" "$OUT/mbed/library/libmbedcrypto.a" "$SODIUM/lib/libsodium.a" \
   -o "$OUT/server_test"
 
 cd "$OUT"

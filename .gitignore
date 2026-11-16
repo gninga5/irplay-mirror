@@ -19,3 +19,4 @@ local.properties
 /.idea/*
 !/.idea/codeStyles/
 /.kotlin
+/app/src/main/rust/target

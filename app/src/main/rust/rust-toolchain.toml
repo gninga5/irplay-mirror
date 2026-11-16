@@ -1,0 +1,5 @@
+# Versione fissa del compilatore: build riproducibili. 1.99.1 (13 ottobre 2026).
+[toolchain]
+channel = "1.99.1"
+profile = "minimal"
+targets = ["aarch64-linux-android", "armv7-linux-androideabi"]

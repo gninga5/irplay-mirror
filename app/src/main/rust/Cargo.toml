@@ -1,0 +1,27 @@
+# Componente Rust di iRPlay: libreria statica inclusa in libirplay_native.so (vedi
+# app/src/main/cpp/CMakeLists.txt). Si migra qui, un modulo alla volta, il codice che
+# legge dati dalla rete: in Rust gli errori di memoria non compilano.
+[package]
+name = "irplay_core"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+publish = false
+
+[lib]
+# staticlib per Android e per i test sul Mac; rlib per i test Rust (cargo test).
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+
+[profile.release]
+# Un panic non deve mai attraversare il confine con il C++: si chiude il processo.
+panic = "abort"
+lto = true
+codegen-units = 1
+opt-level = 3
+debug = false
+strip = "debuginfo"
+
+[profile.dev]
+panic = "abort"

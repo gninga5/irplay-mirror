@@ -161,6 +161,11 @@ cd -
 ./gradlew :app:assembleRelease
 ```
 
+Serve anche Rust: installa `rustup`, e la compilazione prende da sola il compilatore indicato in
+`app/src/main/rust/rust-toolchain.toml` (con i target Android). Una parte del motore nativo sta
+passando da C++ a Rust, a cominciare dal codice che legge i dati dalla rete; quella parte la
+compila Cargo e finisce nella stessa libreria nativa.
+
 Il passaggio di mbedTLS va fatto una volta sola; la compilazione con Gradle non ha bisogno di
 Python. libsodium è già pronta come AAR in `app/libs`, compilata dai sorgenti ufficiali con
 `dist-build/android-aar.sh`.
@@ -171,7 +176,7 @@ release viene firmata con la chiave di debug.
 
 ### Test
 
-`tools/hosttest/run_tests.sh` compila il motore nativo per macOS con AddressSanitizer e UBSan e
+`tools/hosttest/run_tests.sh` esegue i test Rust, poi compila il motore nativo per macOS con AddressSanitizer e UBSan e
 lo mette alla prova contro un iPhone simulato: pairing e PIN, FairPlay, video e audio cifrati,
 ALAC senza perdita andata e ritorno, il watchdog, richieste malformate e qualche centinaio di
 migliaia di plist, SPS e pacchetti ALAC alterati apposta. C'è anche un client che parla con

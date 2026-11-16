@@ -153,6 +153,11 @@ cd -
 ./gradlew :app:assembleRelease
 ```
 
+You also need Rust: install `rustup` and the build picks the pinned compiler from
+`app/src/main/rust/rust-toolchain.toml` (with the Android targets) by itself. Part of the
+native engine is moving from C++ to Rust, starting with the code that reads data from the
+network; that crate is built by Cargo and linked into the same native library.
+
 The mbedTLS step is needed only once; the Gradle build itself doesn't need Python. libsodium
 comes as a prebuilt AAR in `app/libs`, built from the official sources with
 `dist-build/android-aar.sh`.
@@ -163,7 +168,7 @@ release build falls back to the debug key.
 
 ### Tests
 
-`tools/hosttest/run_tests.sh` builds the native engine for macOS with AddressSanitizer and
+`tools/hosttest/run_tests.sh` runs the Rust tests, then builds the native engine for macOS with AddressSanitizer and
 UBSan and runs it against a fake iPhone: pairing and PIN, FairPlay, encrypted video and audio,
 lossless ALAC round trips, the watchdog, malformed requests, and a few hundred thousand fuzzed
 plists, SPS and ALAC packets. There's also a client that talks to the app running in the TV

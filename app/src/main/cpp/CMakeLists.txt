@@ -5,6 +5,7 @@
 #   - libsodium (ISC, Prefab AAR): Ed25519 / X25519 / SHA-512 per pair-setup/verify
 #   - playfair  (GPL-3): decifratura della chiave FairPlay ricevuta in fp-setup
 #   - FFmpeg    (LGPL-2.1+): solo il decoder ALAC, per l'audio "solo musica"
+#   - irplay_core (Rust, app/src/main/rust): il codice che si migra da C++ a Rust
 # ==============================================================================
 cmake_minimum_required(VERSION 3.22.1)
 project("irplay_native" C CXX)
@@ -55,6 +56,32 @@ set_target_properties(ffmpeg_avcodec PROPERTIES
 add_library(ffmpeg_avutil STATIC IMPORTED)
 set_target_properties(ffmpeg_avutil PROPERTIES IMPORTED_LOCATION ${FFMPEG}/lib/${ANDROID_ABI}/libavutil.a)
 
+# --- Componente Rust (app/src/main/rust): libreria statica compilata da Cargo -------------
+# Versione del compilatore fissata in rust-toolchain.toml; --locked usa esattamente
+# Cargo.lock. Le librerie statiche non richiedono il linker dell'NDK.
+find_program(CARGO cargo HINTS $ENV{HOME}/.cargo/bin /opt/homebrew/opt/rustup/bin REQUIRED)
+get_filename_component(CARGO_DIR ${CARGO} DIRECTORY)
+if(ANDROID_ABI STREQUAL "arm64-v8a")
+    set(RUST_TARGET aarch64-linux-android)
+elseif(ANDROID_ABI STREQUAL "armeabi-v7a")
+    set(RUST_TARGET armv7-linux-androideabi)
+else()
+    message(FATAL_ERROR "ABI non supportata dal componente Rust: ${ANDROID_ABI}")
+endif()
+set(RUST_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../rust)
+set(RUST_TARGET_DIR ${CMAKE_CURRENT_BINARY_DIR}/rust-target)
+set(RUST_LIB ${RUST_TARGET_DIR}/${RUST_TARGET}/release/libirplay_core.a)
+add_custom_target(irplay_core_build
+        COMMAND ${CMAKE_COMMAND} -E env CARGO_TARGET_DIR=${RUST_TARGET_DIR}
+                "PATH=${CARGO_DIR}:$ENV{PATH}"   # i proxy di rustup cercano rustc nel PATH
+                ${CARGO} build --release --locked --target ${RUST_TARGET}
+        WORKING_DIRECTORY ${RUST_DIR}
+        BYPRODUCTS ${RUST_LIB}
+        USES_TERMINAL)
+add_library(irplay_core STATIC IMPORTED)
+set_target_properties(irplay_core PROPERTIES IMPORTED_LOCATION ${RUST_LIB})
+add_dependencies(irplay_core irplay_core_build)
+
 # --- Libreria iRPlay ---------------------------------------------------------------
 add_library(${CMAKE_PROJECT_NAME} SHARED
         jni_bridge.cpp
@@ -77,10 +104,13 @@ add_library(${CMAKE_PROJECT_NAME} SHARED
 # Hardening: questo codice legge pacchetti da una rete non fidata (la LAN).
 target_compile_options(${CMAKE_PROJECT_NAME} PRIVATE
         -Wall -Wextra -Wformat=2 -Werror=format-security
-        -fstack-protector-strong)
+        -fstack-protector-strong
+        -fvisibility=hidden -fvisibility-inlines-hidden)   # esportate solo le funzioni JNIEXPORT
 target_link_options(${CMAKE_PROJECT_NAME} PRIVATE
         -Wl,-z,relro -Wl,-z,now
-        -Wl,-z,max-page-size=16384)   # pagine da 16 KB: necessarie sui dispositivi Android 15+
+        -Wl,-z,max-page-size=16384    # pagine da 16 KB: necessarie sui dispositivi Android 15+
+        -Wl,--exclude-libs,ALL        # i simboli delle librerie statiche restano privati: esportate solo le JNI
+        -Wl,--gc-sections)            # e così il codice mai chiamato (libreria standard di Rust compresa) si scarta
 
 find_library(log-lib log)
 target_link_libraries(${CMAKE_PROJECT_NAME}
@@ -89,5 +119,6 @@ target_link_libraries(${CMAKE_PROJECT_NAME}
         playfair
         ffmpeg_avcodec
         ffmpeg_avutil     # dopo avcodec: l'ordine conta per il linker con le librerie statiche
+        irplay_core
         ${log-lib}
         android)

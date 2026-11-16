@@ -16,6 +16,7 @@ object AppSettings {
     private const val KEY_TV_NAME = "tv_name"
     private const val KEY_PIN_MODE = "pin_mode"
     private const val KEY_LYRICS = "lyrics"
+    private const val KEY_VIDEO_QUALITY = "video_quality"
 
     /** Valori uguali a irplay::PinMode nel codice nativo. */
     const val PIN_OFF = 0
@@ -68,6 +69,16 @@ object AppSettings {
     fun setPinMode(context: Context, mode: Int) {
         if (mode !in PIN_OFF..PIN_ALWAYS) return
         prefs(context).edit().putInt(KEY_PIN_MODE, mode).apply()
+    }
+
+    /** Qualità video della duplicazione (VideoQuality.*); predefinita Standard (H.264). */
+    fun videoQuality(context: Context): Int =
+        prefs(context).getInt(KEY_VIDEO_QUALITY, VideoQuality.STANDARD)
+            .takeIf { it in VideoQuality.STANDARD..VideoQuality.MAX } ?: VideoQuality.STANDARD
+
+    fun setVideoQuality(context: Context, quality: Int) {
+        if (quality !in VideoQuality.STANDARD..VideoQuality.MAX) return
+        prefs(context).edit().putInt(KEY_VIDEO_QUALITY, quality).apply()
     }
 
     /** Salva il nome scelto (null = torna a quello di sistema). Restituisce false se il nome non è valido. */

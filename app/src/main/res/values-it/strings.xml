@@ -84,4 +84,13 @@
     <string name="receiver_video">Video in riproduzione</string>
     <string name="video_error">Questo video non si può riprodurre sulla TV</string>
     <string name="video_error_protected">Questo video è protetto e si può riprodurre solo su una Apple TV</string>
+    <string name="video_quality_title">Qualità video</string>
+    <string name="video_quality_dialog_title">Qualità della duplicazione</string>
+    <string name="video_quality_standard">Standard (H.264)</string>
+    <string name="video_quality_high">Alta (HEVC, 1080p)</string>
+    <string name="video_quality_max">Massima (HEVC, 4K)</string>
+    <string name="video_quality_standard_desc">Standard (H.264) · ritardo minimo</string>
+    <string name="video_quality_high_desc">Alta (HEVC, 1080p) · immagine più pulita</string>
+    <string name="video_quality_max_desc">Massima (HEVC, 4K) · più nitida, può aggiungere ritardo</string>
+    <string name="video_quality_changed">Vale dalla prossima connessione</string>
 </resources>

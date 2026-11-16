@@ -20,10 +20,6 @@ namespace irplay {
 
         // Bitmask dei formati audio accettati in ingresso e in uscita (PCM, ALAC, AAC, AAC-ELD...).
         constexpr int kAudioFormats = 0x3FFFFFC;
-        // Il display è annunciato a 1080p: iOS adatta la risoluzione dello stream a questi valori.
-        // La risoluzione reale della TV verrà passata da Kotlin nella Fase 5.
-        constexpr int kDisplayWidth = 1920;
-        constexpr int kDisplayHeight = 1080;
 
         bool isPrintableAscii(std::string_view s, size_t minLen, size_t maxLen) {
             if (s.size() < minLen || s.size() > maxLen) return false;
@@ -106,7 +102,10 @@ namespace irplay {
                    && isPrintableAscii(i.model, 1, 32)
                    && isPrintableAscii(i.sourceVersion, 1, 16)
                    && isTxtRecord(i.txtAirPlay)
-                   && i.maxFps >= 15 && i.maxFps <= 60;
+                   && i.maxFps >= 15 && i.maxFps <= 60
+                   && i.displayWidth >= 640 && i.displayWidth <= 3840
+                   && i.displayHeight >= 360 && i.displayHeight <= 2160
+                   && (i.hevc || (i.displayWidth <= 1920 && i.displayHeight <= 1080));   // oltre 1080p solo in HEVC
         }
 
         Dict audioFormat(int type) {
@@ -131,10 +130,10 @@ namespace irplay {
             d.set("uuid", i.pairingId)            // stabile tra i riavvii, come richiede iOS
                     .set("widthPhysical", false)
                     .set("heightPhysical", false)
-                    .set("width", kDisplayWidth)
-                    .set("height", kDisplayHeight)
-                    .set("widthPixels", kDisplayWidth)
-                    .set("heightPixels", kDisplayHeight)
+                    .set("width", i.displayWidth)
+                    .set("height", i.displayHeight)
+                    .set("widthPixels", i.displayWidth)
+                    .set("heightPixels", i.displayHeight)
                     .set("rotation", false)
                     .set("refreshRate", 1.0 / 60.0)  // periodo di refresh in secondi, non frequenza
                     // 60 fps dimezzano l'intervallo tra frame (16,7 ms invece di 33): meno latenza

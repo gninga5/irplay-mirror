@@ -1,6 +1,6 @@
 /*
  * CodecManager.kt
- * Scopo: decodifica hardware H.264 con MediaCodec in modalità asincrona e rendering
+ * Scopo: decodifica hardware H.264 o HEVC con MediaCodec in modalità asincrona e rendering
  * diretto sulla Surface della SurfaceView.
  *
  * Perché così:
@@ -56,8 +56,9 @@ class CodecManager(private val onVideoSize: (width: Int, height: Int) -> Unit) :
     // --- stato confinato al thread "iRPlay-Video" ---
     private var surface: Surface? = null
     private var codec: MediaCodec? = null
-    private var sps: ByteArray? = null
-    private var pps: ByteArray? = null
+    private var sps: ByteArray? = null   // csd-0: SPS (H.264) o VPS+SPS+PPS (HEVC)
+    private var pps: ByteArray? = null   // csd-1: PPS (H.264), vuoto per HEVC
+    private var codecType = NativeBridge.CODEC_H264
     private val pending = ArrayDeque<Frame>()
     private var pendingBytes = 0L
     private val freeInputs = ArrayDeque<Int>()
@@ -107,9 +108,12 @@ class CodecManager(private val onVideoSize: (width: Int, height: Int) -> Unit) :
         }
     }
 
-    override fun onVideoConfig(sps: ByteArray, pps: ByteArray) {
+    override fun onVideoConfig(codec: Int, csd0: ByteArray, csd1: ByteArray) {
+        val sps = csd0
+        val pps = csd1
         handler.post {
-            if (!sps.contentEquals(this.sps) || !pps.contentEquals(this.pps)) {
+            if (codec != codecType || !sps.contentEquals(this.sps) || !pps.contentEquals(this.pps)) {
+                codecType = codec
                 this.sps = sps
                 this.pps = pps
                 clearPending()
@@ -203,9 +207,10 @@ class CodecManager(private val onVideoSize: (width: Int, height: Int) -> Unit) :
      * nei decoder che non leggono KEY_LOW_LATENCY, come gli OMX MediaTek di Android 11-12.
      */
     private fun buildFormat(sps: ByteArray, pps: ByteArray, level: Int, codecName: String): MediaFormat =
-        MediaFormat.createVideoFormat(MIME, MAX_WIDTH, MAX_HEIGHT).apply {
+        (if (codecType == NativeBridge.CODEC_HEVC) MediaFormat.createVideoFormat(MIME_HEVC, MAX_WIDTH_HEVC, MAX_HEIGHT_HEVC)
+         else MediaFormat.createVideoFormat(MIME, MAX_WIDTH, MAX_HEIGHT)).apply {
             setByteBuffer("csd-0", ByteBuffer.wrap(sps))
-            setByteBuffer("csd-1", ByteBuffer.wrap(pps))
+            if (pps.isNotEmpty()) setByteBuffer("csd-1", ByteBuffer.wrap(pps))   // HEVC: tutto in csd-0
             setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, MAX_INPUT_SIZE)
             if (level >= 1 && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
@@ -238,9 +243,9 @@ class CodecManager(private val onVideoSize: (width: Int, height: Int) -> Unit) :
 
         val gen = ++generation
         val c = try {
-            MediaCodec.createDecoderByType(MIME)
+            MediaCodec.createDecoderByType(if (codecType == NativeBridge.CODEC_HEVC) MIME_HEVC else MIME)
         } catch (e: Exception) {
-            Log.e(TAG, "Nessun decoder H.264 disponibile: ${e.javaClass.simpleName}")
+            Log.e(TAG, "Nessun decoder per il formato video: ${e.javaClass.simpleName}")
             return
         }
         val callback = object : MediaCodec.Callback() {
@@ -401,6 +406,9 @@ class CodecManager(private val onVideoSize: (width: Int, height: Int) -> Unit) :
         private const val TAG = "iRPlay_Codec"
         private const val TAG_LATENCY = "iRPlay_Latency"
         private const val MIME = MediaFormat.MIMETYPE_VIDEO_AVC
+        private const val MIME_HEVC = MediaFormat.MIMETYPE_VIDEO_HEVC
+        private const val MAX_WIDTH_HEVC = 3840
+        private const val MAX_HEIGHT_HEVC = 2160
         private const val MAX_WIDTH = 1920
         private const val MAX_HEIGHT = 1080
         private const val MAX_INPUT_SIZE = 2 * 1024 * 1024

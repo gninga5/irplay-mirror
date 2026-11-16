@@ -93,12 +93,12 @@ namespace {
         void onVideoStarted() override { callVoid(gOnVideoStarted); }
         void onVideoStopped() override { callVoid(gOnVideoStopped); }
 
-        void onVideoConfig(const uint8_t* sps, size_t spsLen, const uint8_t* pps, size_t ppsLen) override {
+        void onVideoConfig(int codec, const uint8_t* csd0, size_t csd0Len, const uint8_t* csd1, size_t csd1Len) override {
             JNIEnv* env = currentEnv();
             if (!env) return;
-            jbyteArray s = toJava(env, sps, spsLen);
-            jbyteArray p = toJava(env, pps, ppsLen);
-            if (s && p) env->CallStaticVoidMethod(gBridge, gOnVideoConfig, s, p);
+            jbyteArray s = toJava(env, csd0, csd0Len);
+            jbyteArray p = toJava(env, csd1, csd1Len);
+            if (s && p) env->CallStaticVoidMethod(gBridge, gOnVideoConfig, static_cast<jint>(codec), s, p);
             if (s) env->DeleteLocalRef(s);
             if (p) env->DeleteLocalRef(p);
             clearException(env);
@@ -308,7 +308,7 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void*) {
                     && resolve(env, gOnSessionEnded, "onSessionEnded", "(I)V")
                     && resolve(env, gOnVideoStarted, "onVideoStarted", "()V")
                     && resolve(env, gOnVideoStopped, "onVideoStopped", "()V")
-                    && resolve(env, gOnVideoConfig, "onVideoConfig", "([B[B)V")
+                    && resolve(env, gOnVideoConfig, "onVideoConfig", "(I[B[B)V")
                     && resolve(env, gOnVideoFrame, "onVideoFrame", "([BJZ)V")
                     && resolve(env, gOnAudioStarted, "onAudioStarted", "(I)V")
                     && resolve(env, gOnAudioStopped, "onAudioStopped", "()V")
@@ -334,7 +334,7 @@ JNIEXPORT jint JNICALL
 Java_com_irplay_tv_core_NativeBridge_startServer(
         JNIEnv* env, jclass, jint preferredPort, jbyteArray name, jstring deviceId, jstring pairingId,
         jbyteArray publicKey, jlong features, jstring model, jstring sourceVersion, jbyteArray txtAirPlay,
-        jbyteArray seed, jint maxFps, jint pinMode, jbyteArray trustedKeys) {
+        jbyteArray seed, jint maxFps, jint pinMode, jbyteArray trustedKeys, jboolean hevc, jint displayWidth, jint displayHeight) {
     if (preferredPort < 0 || preferredPort > 65535) return -1;
     if (seed == nullptr || env->GetArrayLength(seed) != 32) return -1;
 
@@ -356,6 +356,9 @@ Java_com_irplay_tv_core_NativeBridge_startServer(
     info.name.assign(nameBytes.begin(), nameBytes.end());   // validato in buildInfoPlists
     info.features = static_cast<uint64_t>(features);
     info.maxFps = static_cast<int>(maxFps);   // validato in buildInfoPlists
+    info.hevc = hevc == JNI_TRUE;
+    info.displayWidth = static_cast<int>(displayWidth);     // validati in buildInfoPlists
+    info.displayHeight = static_cast<int>(displayHeight);
 
     // Controllo di accesso: modalità PIN e chiavi dei dispositivi già associati (32 byte l'una,
     // concatenate). Un array di lunghezza non multipla di 32 è un errore del chiamante.

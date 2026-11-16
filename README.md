@@ -56,10 +56,14 @@ A few other things I wanted for myself:
   "Kitchen" and "Bedroom" don't get mixed up. If your TV has AirPlay built in (newer Sonys do),
   it shows up as "Kitchen (iRPlay)" so you can tell the two apart.
 - **It can open itself** when you start mirroring, so you don't have to launch it first.
+- **Video quality, up to 4K.** Standard is H.264, with the lowest delay. High (HEVC, 1080p) gives
+  a cleaner picture for the same bandwidth, and Maximum (HEVC, 4K) is the sharpest, especially
+  with iPad and Mac. The TV only offers what its hardware decoder can handle.
 - The interface is in English or Italian, depending on the TV.
 
-What it doesn't do yet: HEVC/4K mirroring, copy-protected videos (Apple TV+, films bought on
-iTunes: those only play on an Apple TV) and multi-room audio.
+What it doesn't do: copy-protected videos (Apple TV+, films bought on iTunes: those only play on
+an Apple TV) and multi-room audio, which needs PTP on UDP ports 319/320, out of reach for an app
+on Android without root.
 
 ## Installing
 
@@ -70,7 +74,7 @@ and sideload it. With adb it takes a minute:
    That unlocks the developer options, where you turn on USB debugging (and network debugging,
    if your TV has it).
 2. From a computer on the same network, run `adb connect <tv-ip>:5555` and accept the prompt on the TV.
-3. `adb install iRPlay-Mirror-1.4.0.apk`
+3. `adb install iRPlay-Mirror-1.5.0.apk`
 
 You need Android TV or Google TV 9 or newer on an ARM chip, which is pretty much every TV and
 streaming stick out there. Amazon Fire TV sticks with Fire OS 7 or 8 should work too (sideload
@@ -120,6 +124,11 @@ else an evening:
   for subtitles, with a language tag), and the TV turns them into player preferences. YouTube
   itself never puts subtitles in what it casts: it switches captions off as soon as AirPlay
   starts, and the playlist has no subtitle tracks at all. Screen mirroring shows them.
+- HEVC mirroring is feature bit 42 ("screen multi codec") plus a 3840×2160 display in `/info`;
+  iOS then sends an `hvc1` configuration packet with VPS, SPS and PPS. The Rust module rewrites
+  VPS and SPS to declare no frame reordering, like the H.264 trick, and falls back if B-slices
+  show up. iOS 27.2 already sends them with no reordering, though: on a TCL with a Realtek chip
+  the ~30 ms that 4K adds over H.264 is plain decoding time, not frames being held back.
 - The `0x80` bit in the mDNS `flags` record means "password required". Set it by mistake and
   iOS 27 asks for a PIN, then gives up.
 - In pause, iOS closes the audio stream and reopens it when you resume, while the session stays

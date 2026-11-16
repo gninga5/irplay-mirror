@@ -30,6 +30,9 @@ namespace irplay {
         std::string sourceVersion;
         std::vector<uint8_t> txtAirPlay;  // TXT di _airplay._tcp già codificato (RFC 6763 §6.1)
         int maxFps = 30;                  // frame al secondo chiesti a iOS (30 o 60, secondo il decoder)
+        bool hevc = false;                // HEVC per la duplicazione (bit 42 in features, deciso da Kotlin)
+        int displayWidth = 1920;          // schermo annunciato: iOS adatta la risoluzione a questi valori
+        int displayHeight = 1080;
     };
 
     struct InfoPlists {

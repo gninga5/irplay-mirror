@@ -44,6 +44,7 @@ import com.irplay.tv.core.DacpRemote
 import com.irplay.tv.core.NativeBridge
 import com.irplay.tv.core.ReceiverState
 import com.irplay.tv.core.TrustedDevices
+import com.irplay.tv.core.VideoQuality
 import com.irplay.tv.databinding.ActivityMainBinding
 import java.net.Inet4Address
 import kotlinx.coroutines.MainScope
@@ -80,6 +81,7 @@ class MainActivity : AppCompatActivity() {
         }
         binding.licensesButton.setOnClickListener { startActivity(Intent(this, LicensesActivity::class.java)) }
         binding.autoOpenRow.setOnClickListener { onAutoOpenPressed() }
+        binding.videoQualityRow.setOnClickListener { showVideoQualityDialog() }
         binding.npPrev.setOnClickListener { sendRemote(DacpRemote.Command.PREVIOUS) }
         binding.npPlayPause.setOnClickListener { sendRemote(DacpRemote.Command.PLAY_PAUSE) }
         binding.npNext.setOnClickListener { sendRemote(DacpRemote.Command.NEXT) }
@@ -124,6 +126,7 @@ class MainActivity : AppCompatActivity() {
         renderName()
         renderPin()
         renderLyricsSetting()
+        renderVideoQuality()
     }
 
     override fun onStop() {
@@ -429,6 +432,50 @@ class MainActivity : AppCompatActivity() {
     private fun formatTime(ms: Long): String {
         val s = ms / 1000
         return if (s >= 3600) "%d:%02d:%02d".format(s / 3600, (s / 60) % 60, s % 60) else "%d:%02d".format(s / 60, s % 60)
+    }
+
+    /** Frequenza usata per i controlli del decoder: la stessa che il servizio chiede a iOS. */
+    private val decoderFps: Int
+        get() = if (VideoQuality.hardwareSupports(android.media.MediaFormat.MIMETYPE_VIDEO_AVC, 1920, 1080, 60)) 60 else 30
+
+    private fun renderVideoQuality() {
+        val mode = VideoQuality.effective(AppSettings.videoQuality(this), decoderFps)
+        binding.videoQualitySummary.setText(
+            when (mode.quality) {
+                VideoQuality.MAX -> R.string.video_quality_max
+                VideoQuality.HIGH -> R.string.video_quality_high
+                else -> R.string.video_quality_standard
+            }
+        )
+    }
+
+    /** Solo le scelte che il decoder di questa TV regge. */
+    private fun showVideoQualityDialog() {
+        val choices = VideoQuality.available(decoderFps)
+        val labels = choices.map {
+            getString(
+                when (it) {
+                    VideoQuality.MAX -> R.string.video_quality_max_desc
+                    VideoQuality.HIGH -> R.string.video_quality_high_desc
+                    else -> R.string.video_quality_standard_desc
+                }
+            )
+        }.toTypedArray()
+        val current = VideoQuality.effective(AppSettings.videoQuality(this), decoderFps).quality
+        AlertDialog.Builder(this)
+            .setTitle(R.string.video_quality_dialog_title)
+            .setSingleChoiceItems(labels, choices.indexOf(current).coerceAtLeast(0)) { dialog, which ->
+                val chosen = choices[which]
+                if (chosen != current) {
+                    AppSettings.setVideoQuality(this, chosen)
+                    renderVideoQuality()
+                    AirPlayService.reload(this)   // nuovo annuncio a iOS: formato e risoluzione
+                    Toast.makeText(this, R.string.video_quality_changed, Toast.LENGTH_SHORT).show()
+                }
+                dialog.dismiss()
+            }
+            .setNegativeButton(R.string.rename_cancel, null)
+            .show()
     }
 
     private fun renderPin() {

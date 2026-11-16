@@ -23,6 +23,10 @@ namespace irplay {
         Local = 3,        // fermata dall'utente (tasto BACK)
     };
 
+    /** Formati video della duplicazione (valori uguali in CodecManager.kt). */
+    inline constexpr int kVideoH264 = 0;
+    inline constexpr int kVideoHevc = 1;
+
     class SessionSink {
     public:
         virtual ~SessionSink() = default;
@@ -33,8 +37,11 @@ namespace irplay {
 
         virtual void onVideoStarted() = 0;
         virtual void onVideoStopped() = 0;
-        /** SPS e PPS con start code Annex-B. */
-        virtual void onVideoConfig(const uint8_t* sps, size_t spsLen, const uint8_t* pps, size_t ppsLen) = 0;
+        /**
+         * Formato del video. codec: kVideoH264 (csd0 = SPS, csd1 = PPS) o kVideoHevc
+         * (csd0 = VPS+SPS+PPS, csd1 vuoto); parametri con start code Annex-B.
+         */
+        virtual void onVideoConfig(int codec, const uint8_t* csd0, size_t csd0Len, const uint8_t* csd1, size_t csd1Len) = 0;
         /** Frame Annex-B completo. ptsUs: orologio del mittente, monotono. */
         virtual void onVideoFrame(const uint8_t* data, size_t len, int64_t ptsUs, bool keyframe) = 0;
 

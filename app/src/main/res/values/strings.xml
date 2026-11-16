@@ -87,4 +87,13 @@
     <string name="receiver_video">Playing video</string>
     <string name="video_error">This video can\'t be played on the TV</string>
     <string name="video_error_protected">This video is copy-protected and can only be played on an Apple TV</string>
+    <string name="video_quality_title">Video quality</string>
+    <string name="video_quality_dialog_title">Screen mirroring quality</string>
+    <string name="video_quality_standard">Standard (H.264)</string>
+    <string name="video_quality_high">High (HEVC, 1080p)</string>
+    <string name="video_quality_max">Maximum (HEVC, 4K)</string>
+    <string name="video_quality_standard_desc">Standard (H.264) · lowest delay</string>
+    <string name="video_quality_high_desc">High (HEVC, 1080p) · cleaner picture</string>
+    <string name="video_quality_max_desc">Maximum (HEVC, 4K) · sharpest, may add delay</string>
+    <string name="video_quality_changed">Applies from the next connection</string>
 </resources>

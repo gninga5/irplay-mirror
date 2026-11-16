@@ -65,3 +65,17 @@ swiftc -O "$HERE/gen_h264.swift" -o gen_h264 2>/dev/null && ./gen_h264 >/dev/nul
 clang++ -std=c++20 -Wall -Wextra -Werror -fsanitize=address,undefined -g -I"$C" "$HERE/sps_test.cpp" "$C/sps_rewriter.cpp" "$C/nal_parser.cpp" -o sps_test
 ./sps_test
 swiftc -O "$HERE/vt_check.swift" -o vt_check 2>/dev/null && ./vt_check
+
+# HEVC (rust/src/hevc.rs): flussi generati con VideoToolbox, con e senza riordino e in 4K.
+# I parametri riscritti devono dare immagini identiche agli originali, e fotogrammi chiave e
+# B-slice riconosciuti devono coincidere con quanto dichiara l'encoder.
+HB="$OUT/hevc"; mkdir -p "$HB"
+swiftc -O "$HERE/gen_hevc.swift" -o "$HB/gen_hevc" 2>/dev/null
+swiftc -O "$HERE/vt_hevc_check.swift" -o "$HB/vt_hevc_check" 2>/dev/null
+(cd "$RUSTDIR" && CARGO_TARGET_DIR="$OUT/rust-target" "$CARGO" build --release --locked -q --example hevc_check)
+for spec in "lowlat 1920 1080 0" "reorder 1920 1080 1" "uhd 3840 2160 0"; do
+  set -- $spec
+  "$HB/gen_hevc" "$HB/$1" "$2" "$3" "$4" >/dev/null
+  "$OUT/rust-target/release/examples/hevc_check" "$HB/$1"
+  "$HB/vt_hevc_check" "$HB/$1"
+done

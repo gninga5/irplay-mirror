@@ -58,10 +58,14 @@ Poi ci sono alcune cose che volevo per me:
   "Cucina" e "Camera" non si confondono. Se la TV ha già AirPlay integrato (le Sony recenti ce
   l'hanno), compare come "Cucina (iRPlay)" per distinguere le due voci.
 - **Si apre da sola** quando inizi a duplicare lo schermo, senza doverla avviare prima.
+- **Qualità video, fino al 4K.** Standard è H.264, con il ritardo più basso. Alta (HEVC, 1080p)
+  dà un'immagine più pulita a parità di banda, e Massima (HEVC, 4K) è la più nitida, soprattutto
+  con iPad e Mac. La TV offre solo quello che il suo decoder hardware regge.
 - L'interfaccia è in italiano o in inglese, a seconda della lingua della TV.
 
-Cosa non fa ancora: la duplicazione in HEVC/4K, i video protetti (Apple TV+, film comprati su
-iTunes: quelli si vedono solo su una Apple TV) e l'audio su più stanze.
+Cosa non fa: i video protetti (Apple TV+, film comprati su iTunes: quelli si vedono solo su una
+Apple TV) e l'audio su più stanze, che richiede il PTP sulle porte UDP 319/320, fuori portata per
+un'app su Android senza root.
 
 ## Installarla
 
@@ -73,7 +77,7 @@ e installalo a mano. Con adb ci vuole un minuto:
    (e il debug di rete, se la tua TV lo ha).
 2. Da un computer sulla stessa rete esegui `adb connect <ip-della-tv>:5555` e accetta la richiesta
    che compare sulla TV.
-3. `adb install iRPlay-Mirror-1.4.0.apk`
+3. `adb install iRPlay-Mirror-1.5.0.apk`
 
 Serve Android TV o Google TV 9 o successivi su processore ARM, cioè praticamente qualsiasi TV
 o chiavetta in commercio. Dovrebbero andare anche le chiavette Amazon Fire TV con Fire OS 7 o 8
@@ -127,6 +131,12 @@ altro risparmiano una serata.
   YouTube però non mette mai i sottotitoli in ciò che trasmette: li spegne appena parte AirPlay,
   e la playlist non contiene nessuna traccia di sottotitoli. Con la duplicazione dello schermo
   invece si vedono.
+- La duplicazione in HEVC è il bit 42 delle funzioni ("screen multi codec") più uno schermo
+  3840×2160 in `/info`; iOS manda allora un pacchetto di configurazione `hvc1` con VPS, SPS e PPS.
+  Il modulo Rust riscrive VPS e SPS per dichiarare zero fotogrammi da riordinare, come il trucco
+  di H.264, e torna indietro se compaiono B-slice. iOS 27.2 però li manda già senza riordino: su
+  una TCL con chip Realtek i ~30 ms che il 4K aggiunge rispetto a H.264 sono tempo di
+  decodifica, non fotogrammi trattenuti.
 - Il bit `0x80` nel campo `flags` dell'annuncio mDNS significa "password richiesta". Se lo metti
   per sbaglio, iOS 27 chiede un PIN e poi rinuncia.
 - In pausa iOS chiude il flusso audio e lo riapre alla ripresa, mentre la sessione resta aperta.

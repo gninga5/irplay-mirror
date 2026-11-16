@@ -17,6 +17,7 @@
 #include <ctime>
 #include <poll.h>
 #include <unistd.h>
+#include <cstring>
 #include <vector>
 
 #include <mbedtls/platform_util.h>
@@ -24,6 +25,7 @@
 #include "alac_decoder.h"
 #include "log.h"
 #include "nal_parser.h"
+#include "rust_core.h"
 #include "net_util.h"
 #include "sps_rewriter.h"
 
@@ -152,6 +154,10 @@ namespace irplay {
         std::vector<uint8_t> payload, sps, pps, frame, spsOriginal;
         bool prependConfig = false;
         bool lowLatencySps = true;   // si spegne se iOS usa B-frame (vedi sps_rewriter.h)
+        // HEVC (rust/src/hevc.rs): parametri in Annex-B, originali e riscritti per bassa latenza.
+        bool hevc = false;
+        uint8_t hevcExtraBits = 0;
+        std::vector<uint8_t> hevcCsd, hevcCsdOriginal;
         unsigned badFrames = 0;
 
         while (running_) {
@@ -172,6 +178,29 @@ namespace irplay {
                     // continuo e saltarne uno renderebbe illeggibili tutti i successivi.
                     aes_->apply(payload.data(), size);
                     bool keyframe = false, bSlice = false;
+                    if (hevc) {
+                        if (!irplay_hevc_frame(payload.data(), size, hevcExtraBits, &keyframe, &bSlice)) {
+                            if (badFrames++ % 100 == 0) LOGW("Frame HEVC non valido scartato (%u in totale)", badFrames);
+                            break;
+                        }
+                        if (bSlice && lowLatencySps && hevcCsd != hevcCsdOriginal) {
+                            LOGW("Il client usa B-frame: torno ai parametri HEVC originali");
+                            lowLatencySps = false;
+                            hevcCsd = hevcCsdOriginal;
+                            sink_.onVideoConfig(kVideoHevc, hevcCsd.data(), hevcCsd.size(), nullptr, 0);
+                            prependConfig = true;
+                        }
+                        const int64_t hpts = ntpToUs(le64(hdr + 8));
+                        if (prependConfig) {
+                            frame.assign(hevcCsd.begin(), hevcCsd.end());
+                            frame.insert(frame.end(), payload.begin(), payload.end());
+                            sink_.onVideoFrame(frame.data(), frame.size(), hpts, keyframe);
+                            prependConfig = false;
+                        } else {
+                            sink_.onVideoFrame(payload.data(), size, hpts, keyframe);
+                        }
+                        break;
+                    }
                     if (!nal::avccToAnnexB(payload.data(), size, keyframe, lowLatencySps ? &bSlice : nullptr)) {
                         if (badFrames++ % 100 == 0) LOGW("Frame video non valido scartato (%u in totale)", badFrames);
                         break;
@@ -181,7 +210,7 @@ namespace irplay {
                         lowLatencySps = false;
                         if (!spsOriginal.empty() && sps != spsOriginal) {
                             sps = spsOriginal;
-                            sink_.onVideoConfig(sps.data(), sps.size(), pps.data(), pps.size());
+                            sink_.onVideoConfig(kVideoH264, sps.data(), sps.size(), pps.data(), pps.size());
                             prependConfig = true;
                         }
                     }
@@ -202,6 +231,35 @@ namespace irplay {
                 }
                 case 0x01: {
                     if (hdr[6] == 0x56 || hdr[6] == 0x5E) break;   // client in pausa: nessun formato nuovo
+                    if (size >= 8 && std::memcmp(payload.data() + 4, "hvc1", 4) == 0) {
+                        // HEVC: parametri letti e (se serve) riscritti dal modulo Rust.
+                        std::vector<uint8_t> orig(4096), patched(4096);
+                        size_t origLen = 0, patchedLen = 0;
+                        uint8_t extra = 0;
+                        if (irplay_hevc_config(payload.data(), size, false, orig.data(), orig.size(), &origLen, &extra) != kHevcConfigUnchanged) {
+                            LOGW("Configurazione HEVC non valida");
+                            break;
+                        }
+                        orig.resize(origLen);
+                        const int res = lowLatencySps
+                                ? irplay_hevc_config(payload.data(), size, true, patched.data(), patched.size(), &patchedLen, &extra)
+                                : kHevcConfigUnchanged;
+                        hevcCsdOriginal = orig;
+                        if (res == kHevcConfigLowLatency) {
+                            patched.resize(patchedLen);
+                            hevcCsd.swap(patched);
+                            LOGI("Formato video: HEVC, parametri riscritti per bassa latenza");
+                        } else {
+                            hevcCsd = orig;
+                            LOGI("Formato video: HEVC, parametri già a bassa latenza");
+                        }
+                        hevc = true;
+                        hevcExtraBits = extra;
+                        sink_.onVideoConfig(kVideoHevc, hevcCsd.data(), hevcCsd.size(), nullptr, 0);
+                        prependConfig = true;
+                        break;
+                    }
+                    hevc = false;
                     std::vector<uint8_t> newSps, newPps;
                     if (!nal::parseAvcC(payload.data(), size, newSps, newPps)) {
                         LOGW("Formato video non supportato (solo H.264)");
@@ -216,7 +274,7 @@ namespace irplay {
                         sps.swap(newSps);
                     }
                     pps.swap(newPps);
-                    sink_.onVideoConfig(sps.data(), sps.size(), pps.data(), pps.size());
+                    sink_.onVideoConfig(kVideoH264, sps.data(), sps.size(), pps.data(), pps.size());
                     prependConfig = true;
                     break;
                 }

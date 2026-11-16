@@ -63,7 +63,9 @@ public:
     void onSessionEnded(EndReason r) override { Event e{"end"}; e.i = (int) r; push(e); }
     void onVideoStarted() override { push({"vstart"}); }
     void onVideoStopped() override { push({"vstop"}); }
-    void onVideoConfig(const uint8_t* s, size_t sl, const uint8_t* p, size_t pl) override { push({"vcfg", Bytes(s, s + sl), Bytes(p, p + pl)}); }
+    void onVideoConfig(int codec, const uint8_t* s, size_t sl, const uint8_t* p, size_t pl) override {
+        Event e{"vcfg", Bytes(s, s + sl), Bytes(p, p + pl)}; e.i = codec; push(e);
+    }
     void onVideoFrame(const uint8_t* d, size_t l, int64_t pts, bool k) override { Event e{"frame", Bytes(d, d + l)}; e.i = pts; e.flag = k; push(e); }
     void onAudioStarted(int ct) override { Event e{"astart"}; e.i = ct; push(e); }
     void onAudioStopped() override { push({"astop"}); }
@@ -979,7 +981,7 @@ int main() {
         h.insert(h.end(), payload.begin(), payload.end()); send(vfd, h.data(), h.size(), 0);
     };
     sendPkt(1, Bytes{1, 0x64, 0, 0x28, 0xFF, 0xE1, 0, 3, 0x67, 0xAA, 0xBB, 1, 0, 2, 0x68, 0xCC}, 0);
-    CHECK(sink->waitFor("vcfg", &e) && e.a.size() == 7 && e.b.size() == 6);
+    CHECK(sink->waitFor("vcfg", &e) && e.i == kVideoH264 && e.a.size() == 7 && e.b.size() == 6);
     // chiave video calcolata in modo indipendente
     uint8_t vkey[16], viv[16];
     { char b[64]; int n = snprintf(b, sizeof b, "AirPlayStreamKey%llu", (unsigned long long) streamId); sha512_16(Bytes(b, b + n), skey, 16, vkey);
@@ -998,6 +1000,38 @@ int main() {
         Bytes exp = frames[i]; bool k; nal::avccToAnnexB(exp.data(), exp.size(), k);
         if (i == 0) { Bytes pre = {0, 0, 0, 1, 0x67, 0xAA, 0xBB, 0, 0, 0, 1, 0x68, 0xCC}; pre.insert(pre.end(), exp.begin(), exp.end()); exp = pre; CHECK(e.flag); CHECK(e.i == 5500000); }
         CHECK(e.a == exp);
+    }
+    // ---- HEVC: configurazione "hvc1" con riordino dichiarato, IDR, poi una B-slice
+    {
+        auto hex = [](const char* h) { Bytes b; for (size_t i = 0; h[i] && h[i + 1]; i += 2) { unsigned v; sscanf(h + i, "%2x", &v); b.push_back((uint8_t) v); } return b; };
+        // parametri reali di VideoToolbox con riordino (tools/hosttest/gen_hevc.swift)
+        const Bytes vps = hex("40010c01ffff016000000300b0000003000003007815c090");
+        const Bytes sps = hex("420101016000000300b00000030000030078a003c0801107cb8815ee459510");
+        const Bytes pps = hex("4401c02cbd14d9");
+        Bytes cfg(0x75, 0); memcpy(cfg.data() + 4, "hvc1", 4);
+        for (auto [m, nal] : {std::pair<uint8_t, const Bytes*>{0xA0, &vps}, {0xA1, &sps}, {0xA2, &pps}}) {
+            cfg.insert(cfg.end(), {m, 0, 1, 0, (uint8_t) nal->size()}); cfg.insert(cfg.end(), nal->begin(), nal->end());
+        }
+        sendPkt(1, cfg, 0);
+        Bytes orig;
+        for (const Bytes* n : {&vps, &sps, &pps}) { orig.insert(orig.end(), {0, 0, 0, 1}); orig.insert(orig.end(), n->begin(), n->end()); }
+        CHECK(sink->waitFor("vcfg", &e) && e.i == kVideoHevc && e.b.empty() && e.a != orig);   // riscritti
+        const Bytes patched = e.a;
+        // IDR (tipo 19) e poi una slice TRAIL_R con slice_type 0 (B): 1 (prima) 1 (pps 0) 1 (tipo 0)
+        const Bytes idr = {0, 0, 0, 4, 0x26, 0x01, 0xAF, 0x80};
+        const Bytes bsl = {0, 0, 0, 4, 0x02, 0x01, 0xE0, 0x80};
+        for (const Bytes* fr : {&idr, &bsl}) {
+            Bytes enc = *fr; ctr(vkey, viv, ks, enc.data(), enc.size()); ks += enc.size();
+            sendPkt(0, enc, (6ull << 32));
+        }
+        CHECK(sink->waitFor("frame", &e) && e.flag);
+        { Bytes exp = patched; exp.insert(exp.end(), {0, 0, 0, 1, 0x26, 0x01, 0xAF, 0x80}); CHECK(e.a == exp); }
+        CHECK(sink->waitFor("vcfg", &e) && e.i == kVideoHevc && e.a == orig);   // B-frame: parametri originali
+        CHECK(sink->waitFor("frame", &e) && !e.flag);
+        { Bytes exp = orig; exp.insert(exp.end(), {0, 0, 0, 1, 0x02, 0x01, 0xE0, 0x80}); CHECK(e.a == exp); }
+        // configurazione HEVC rovinata: ignorata
+        Bytes bad = cfg; bad[0x75] = 0xA2; sendPkt(1, bad, 0);
+        CHECK(!sink->waitFor("vcfg", nullptr, 300));
     }
     sendPkt(2, {}, 0);   // heartbeat
 

@@ -31,7 +31,6 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.media.MediaCodecInfo
 import android.media.MediaCodecList
 import android.media.MediaFormat
 import android.net.ConnectivityManager
@@ -237,8 +236,9 @@ class AirPlayService : Service() {
         try {
             return NativeBridge.startServer(
                 PREFERRED_RTSP_PORT, deviceName.toByteArray(Charsets.UTF_8), identity.deviceId, identity.pairingId,
-                identity.publicKey, FEATURES, MODEL, SRCVERS, encodeTxt(airplayTxt(identity)), seed,
+                identity.publicKey, features, MODEL, SRCVERS, encodeTxt(airplayTxt(identity)), seed,
                 preferredFps(), AppSettings.pinMode(applicationContext), TrustedDevices.load(applicationContext),
+                videoMode.hevc, videoMode.width, videoMode.height,
             )
         } finally {
             seed.fill(0)
@@ -252,7 +252,7 @@ class AirPlayService : Service() {
      */
     private fun preferredFps(): Int = try {
         val ok = MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos.any { info ->
-            !info.isEncoder && isHardwareDecoder(info) &&
+            !info.isEncoder && VideoQuality.isHardwareDecoder(info) &&
                 info.supportedTypes.any { it.equals(MediaFormat.MIMETYPE_VIDEO_AVC, ignoreCase = true) } &&
                 info.getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_AVC)
                     .videoCapabilities?.areSizeAndRateSupported(1920, 1080, 60.0) == true
@@ -262,15 +262,6 @@ class AirPlayService : Service() {
         30
     }.also { Log.i(TAG, "Frame rate richiesto a iOS: $it fps") }
 
-    /**
-     * Da Android 10 lo dice il sistema. Su Android 9 (Fire OS 7) si riconoscono dal nome i
-     * decoder software di Android: OMX.google.*, c2.android.* e quelli che dichiarano "sw".
-     */
-    private fun isHardwareDecoder(info: MediaCodecInfo): Boolean {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) return info.isHardwareAccelerated
-        val name = info.name.lowercase()
-        return !name.startsWith("omx.google.") && !name.startsWith("c2.android.") && !name.contains(".sw.")
-    }
 
     /** Eventi dal motore nativo (thread nativi): aggiornano lo stato e non bloccano. */
     private val sessionListener = object : NativeBridge.SessionListener {
@@ -645,6 +636,21 @@ class AirPlayService : Service() {
         register(manager, raop)
     }
 
+    /**
+     * Formato della duplicazione: la scelta salvata, ridotta a ciò che il decoder regge.
+     * Letto a ogni annuncio, così TXT, GET /info e server nativo dicono sempre la stessa cosa.
+     */
+    private val videoMode: VideoQuality.Mode
+        get() = VideoQuality.effective(AppSettings.videoQuality(applicationContext), preferredFps())
+
+    /** Bit 42 ("Screen Multi Codec"): iOS manda HEVC e accetta uno schermo 4K. */
+    private val features: Long
+        get() = if (videoMode.hevc) FEATURES or (1L shl 42) else FEATURES
+
+    // Forma dei TXT "bit 0-31,bit 32-63", come UxPlay: "0x5A7FFEF7,0x0".
+    private val featuresHex: String
+        get() = features.let { "0x%X,0x%X".format(it and 0xFFFFFFFFL, it ushr 32) }
+
     private val pinRequired: Boolean
         get() = AppSettings.pinMode(applicationContext) != AppSettings.PIN_OFF
 
@@ -654,7 +660,7 @@ class AirPlayService : Service() {
      */
     private fun airplayTxt(id: DeviceIdentity): Map<String, String> = linkedMapOf(
         "deviceid" to id.deviceId,      // identità stabile del ricevitore
-        "features" to FEATURES_HEX,     // bitmask delle funzioni supportate (vedi sotto)
+        "features" to featuresHex,      // bitmask delle funzioni supportate (vedi sotto)
         // Status flags: 0x4 = uscita audio collegata. Il bit 0x80 significa "password richiesta":
         // con 0x84 iOS 27 avvia pair-pin-start e la connessione fallisce.
         "flags" to "0x4",
@@ -673,7 +679,7 @@ class AirPlayService : Service() {
         "da" to "true",
         "et" to "0,3,5",        // cifratura: nessuna, FairPlay, FairPlay SAPv2.5
         "vv" to "2",
-        "ft" to FEATURES_HEX,
+        "ft" to featuresHex,
         "am" to MODEL,
         "md" to "0,1,2",        // metadati: testo, copertina, avanzamento
         "rhd" to "5.6.0.0",
@@ -764,8 +770,6 @@ class AirPlayService : Service() {
         // Bit 0 (video) e 4 (HLS) attivi: le app con il pulsante AirPlay (YouTube, Safari ...)
         // passano alla TV l'indirizzo del video invece di duplicare lo schermo.
         private const val FEATURES = 0x5A7FFEF7L
-        // Forma dei TXT "bit 0-31,bit 32-63", come UxPlay: "0x5A7FFEF7,0x0".
-        private val FEATURES_HEX = "0x%X,0x%X".format(FEATURES and 0xFFFFFFFFL, FEATURES ushr 32)
         private const val MODEL = "AppleTV3,2"
         private const val SRCVERS = "220.68"
 

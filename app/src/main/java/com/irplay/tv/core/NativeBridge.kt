@@ -28,7 +28,11 @@ object NativeBridge {
         fun onVideoStarted()
         fun onVideoStopped()
         /** SPS e PPS con start code Annex-B, da passare come csd-0 e csd-1. */
-        fun onVideoConfig(sps: ByteArray, pps: ByteArray)
+        /**
+         * codec: CODEC_H264 (csd0 = SPS, csd1 = PPS) o CODEC_HEVC (csd0 = VPS+SPS+PPS, csd1
+         * vuoto); parametri con start code Annex-B.
+         */
+        fun onVideoConfig(codec: Int, csd0: ByteArray, csd1: ByteArray)
         fun onVideoFrame(data: ByteArray, ptsUs: Long, keyFrame: Boolean)
     }
 
@@ -84,6 +88,10 @@ object NativeBridge {
         fun onMediaTracks(audioLanguage: String, textLanguage: String, textEnabled: Boolean)
     }
 
+    /** Formati video della duplicazione (kVideoH264 / kVideoHevc in session_sink.h). */
+    const val CODEC_H264 = 0
+    const val CODEC_HEVC = 1
+
     const val END_TEARDOWN = 0
     const val END_DISCONNECTED = 1
     const val END_WATCHDOG = 2
@@ -126,6 +134,9 @@ object NativeBridge {
         maxFps: Int,
         pinMode: Int,               // AppSettings.PIN_*
         trustedKeys: ByteArray,     // chiavi Ed25519 dei dispositivi associati, 32 byte l'una
+        hevc: Boolean,              // HEVC per la duplicazione (VideoQuality)
+        displayWidth: Int,          // schermo annunciato a iOS
+        displayHeight: Int,
     ): Int
 
     /** Ferma il server e chiude tutte le connessioni. Idempotente. */
@@ -181,8 +192,8 @@ object NativeBridge {
     }
 
     @JvmStatic
-    fun onVideoConfig(sps: ByteArray, pps: ByteArray) = guarded("formato video") {
-        videoSink?.onVideoConfig(sps, pps)
+    fun onVideoConfig(codec: Int, csd0: ByteArray, csd1: ByteArray) = guarded("formato video") {
+        videoSink?.onVideoConfig(codec, csd0, csd1)
     }
 
     @JvmStatic

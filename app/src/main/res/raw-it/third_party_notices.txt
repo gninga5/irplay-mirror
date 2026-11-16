@@ -28,25 +28,39 @@ Symphonia 0.6.1 (symphonia-core, symphonia-common, symphonia-metadata, symphonia
   Rust. Non modificato. Licenza: Mozilla Public License 2.0 (https://mozilla.org/MPL/2.0/).
   Codice sorgente: https://github.com/pdeljanov/Symphonia e https://crates.io/crates/symphonia-codec-alac.
 
-Libreria standard di Rust e librerie bitflags, bytemuck, lazy_static, log, num-complex,
-num-traits, smallvec (usate da Symphonia)
+Libreria standard di Rust; librerie RustCrypto (aes, aes-gcm, sha1, sha2, crypto-bigint,
+zeroize, getrandom e le loro dipendenze: AES, AES-GCM, SHA, interi grandi a tempo costante per
+SRP); bitflags, bytemuck, lazy_static, log, num-complex, num-traits, smallvec (usate da Symphonia)
   Copyright degli sviluppatori del progetto Rust e dei rispettivi autori.
   Licenza: MIT o Apache License 2.0 (bytemuck anche Zlib); l'app le usa secondo la licenza
   MIT: è concesso gratuitamente di usare il software senza restrizioni, a condizione di
   includere l'avviso di copyright e questo permesso. IL SOFTWARE È FORNITO "COSÌ COM'È",
   SENZA GARANZIE DI ALCUN TIPO.
 
-Mbed TLS 3.6
-  Copyright The Mbed TLS Contributors.
-  Licenza: Apache License 2.0 (https://www.apache.org/licenses/LICENSE-2.0).
-
-libsodium 1.0.22
-  Copyright (c) 2013-2026 Frank Denis <j at pureftpd dot org>.
-  Licenza ISC: Permission to use, copy, modify, and/or distribute this software for any
-  purpose with or without fee is hereby granted, provided that the above copyright notice
-  and this permission notice appear in all copies.
-  THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH REGARD TO
-  THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS.
+curve25519-dalek, ed25519-dalek, x25519-dalek and subtle (Ed25519, X25519, codice a tempo costante)
+  Copyright (c) 2016-2021 isis agora lovecruft. Copyright (c) 2016-2021 Henry de Valence.
+  Copyright (c) 2017-2021 isis agora lovecruft. Copyright (c) 2019-2021 DebugSteven.
+  Copyright (c) 2016-2024 Isis Agora Lovecruft. All rights reserved.
+  Licenza: BSD 3-Clause (testo originale in inglese).
+  Redistribution and use in source and binary forms, with or without modification, are
+  permitted provided that the following conditions are met:
+  1. Redistributions of source code must retain the above copyright notice, this list of
+     conditions and the following disclaimer.
+  2. Redistributions in binary form must reproduce the above copyright notice, this list of
+     conditions and the following disclaimer in the documentation and/or other materials
+     provided with the distribution.
+  3. Neither the name of the copyright holder nor the names of its contributors may be used
+     to endorse or promote products derived from this software without specific prior
+     written permission.
+  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS
+  OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
+  MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+  COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+  EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE
+  GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED
+  AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+  NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+  OF THE POSSIBILITY OF SUCH DAMAGE.
 
 Material Icons (icone della home)
   Copyright Google LLC. Licenza: Apache License 2.0.

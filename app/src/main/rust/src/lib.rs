@@ -11,20 +11,24 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(missing_docs)]
 
+pub mod aes128;
 pub mod alac;
 pub mod dmap;
 pub mod ffi;
+pub mod ffi_crypto;
 pub mod hevc;
 pub mod hls;
+pub mod pairing;
 pub mod plist;
 pub mod rtsp;
+pub mod srp;
 pub mod text;
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 /// Versione dell'interfaccia C. Il C++ la controlla all'avvio: se non coincide con quella
 /// che si aspetta, la libreria Rust è di un'altra build e non va usata.
-pub const ABI_VERSION: u32 = 4;
+pub const ABI_VERSION: u32 = 5;
 
 /// Esegue `f` intercettando un eventuale panic: in quel caso restituisce `fallback`.
 pub(crate) fn guard<T>(fallback: T, f: impl FnOnce() -> T) -> T {
@@ -203,7 +207,7 @@ mod tests {
 
     #[test]
     fn abi_version_is_stable() {
-        assert_eq!(irplay_rust_abi_version(), 4);
+        assert_eq!(irplay_rust_abi_version(), 5);
     }
 
     #[test]

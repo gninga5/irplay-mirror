@@ -159,6 +159,12 @@ altro risparmiano una serata.
   su oltre un milione di pacchetti dell'encoder di riferimento di Apple, otto tipi di segnale,
   frame interi e parziali, coincide bit per bit con l'audio originale, esattamente come FFmpeg.
   L'encoder di Apple resta in `tools/hosttest` per generare i pacchetti dei test.
+- AES su ARM a 32 bit: quasi tutte le TV Android hanno un sistema a 32 bit su una CPU ARMv8
+  con le istruzioni AES, ma né Mbed TLS (compilato per ARMv7) né RustCrypto le usano lì. Sulla
+  TCL l'AES a tabelle di Mbed TLS faceva 25 MB/s, quello a tempo costante di RustCrypto 19 MB/s;
+  un piccolo motore con AESE/AESMC (`aes128.rs`, attivo solo se il kernel segnala HWCAP2_AES)
+  fa ~680 MB/s ed è a tempo costante per costruzione. È verificato con i vettori NIST e contro
+  RustCrypto sul dispositivo stesso.
 - La parte in Rust intercetta i propri panic al confine con il C (`guard` in `lib.rs`): un
   pacchetto che fa inciampare una libreria costa quel pacchetto, non l'app.
 
@@ -167,11 +173,8 @@ La catena con cui vengono ricavate le chiavi è descritta in cima a `airplay_cry
 ## Compilarla da sé
 
 ```
-git clone --recursive https://github.com/gninga5/irplay-mirror.git
-cd irplay-mirror/app/src/main/cpp/third_party/mbedtls
-python3 -m pip install -r scripts/basic.requirements.txt
-make generated_files
-cd -
+git clone https://github.com/gninga5/irplay-mirror.git
+cd irplay-mirror
 ./gradlew :app:assembleRelease
 ```
 
@@ -179,14 +182,16 @@ Serve anche Rust: installa `rustup`, e la compilazione prende da sola il compila
 `app/src/main/rust/rust-toolchain.toml` (con i target Android). Una parte del motore nativo sta
 passando da C++ a Rust, a cominciare dal codice che legge i dati dalla rete; quella parte la
 compila Cargo e finisce nella stessa libreria nativa. Sono già in Rust i parser dei plist
-binari, dei messaggi RTSP/HTTP, dei metadati DMAP e delle playlist HLS, la gestione di HEVC e
-il decoder ALAC. I vecchi parser C++ restano in `tools/hosttest/reference` solo come metro di
+binari, dei messaggi RTSP/HTTP, dei metadati DMAP e delle playlist HLS, tutta la crittografia
+(pairing con e senza PIN, chiavi di sessione, decifratura di audio e video), la gestione di HEVC
+e il decoder ALAC. I vecchi parser C++ restano in `tools/hosttest/reference` solo come metro di
 paragone: `parser_diff` dà a entrambi milioni di input generati e alterati e si ferma alla
 prima differenza.
 
-Il passaggio di mbedTLS va fatto una volta sola; la compilazione con Gradle non ha bisogno di
-Python. libsodium è già pronta come AAR in `app/libs`, compilata dai sorgenti ufficiali con
-`dist-build/android-aar.sh`.
+L'app non collega più nessuna libreria crittografica in C. I test sul Mac usano ancora Mbed TLS
+(submodule git in `tools/hosttest/third_party`, da scaricare con `git submodule update --init`)
+e la libsodium di Homebrew, ma solo per fare la parte dell'iPhone: un'implementazione
+indipendente con cui verificare la nostra.
 
 Per firmare con una chiave tua, metti `IRPLAY_STORE_FILE`, `IRPLAY_STORE_PASSWORD`,
 `IRPLAY_KEY_ALIAS` e `IRPLAY_KEY_PASSWORD` in `~/.gradle/gradle.properties`. Senza, la versione
@@ -207,8 +212,8 @@ iRPlay Mirror è distribuito con licenza **GPL-3.0** (vedi `LICENSE`).
 Si regge sulle spalle di [UxPlay](https://github.com/FDH2/UxPlay) e RPiPlay: senza il loro lavoro
 per capire il protocollo, niente di tutto questo sarebbe stato possibile. La parte FairPlay usa
 *playfair* (GPL-3) e le tabelle di risposta di Juho Vähä-Herttua (LGPL-2.1+). La crittografia
-viene da [Mbed TLS](https://github.com/Mbed-TLS/mbedtls) (Apache-2.0) e
-[libsodium](https://libsodium.org) (ISC), l'audio Apple Lossless dal decoder
+viene da [RustCrypto](https://github.com/RustCrypto) (MIT/Apache-2.0) e dalle librerie
+[dalek](https://github.com/dalek-cryptography) (BSD-3-Clause), l'audio Apple Lossless dal decoder
 ALAC di [Symphonia](https://github.com/pdeljanov/Symphonia) (MPL-2.0) e le icone dalle Material Icons
 di Google (Apache-2.0). Gli avvisi completi sono nell'app, alla voce *Licenze*.
 

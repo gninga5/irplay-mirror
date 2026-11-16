@@ -84,7 +84,6 @@ android {
 
     buildFeatures {
         viewBinding = true
-        prefab = true          // espone libsodium dall'AAR a CMake
     }
 }
 
@@ -107,5 +106,4 @@ dependencies {
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
 
-    implementation(files("libs/libsodium-1.0.22.0.aar"))
 }

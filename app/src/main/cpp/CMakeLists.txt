@@ -1,11 +1,9 @@
 # ==============================================================================
 # iRPlay – CMakeLists.txt
-# Scopo: compila libirplay_native.so (motore RTSP / crypto / parser NAL) e collega:
-#   - mbedTLS   (Apache-2.0): AES-128-CTR (video mirroring) e AES-128-CBC (audio)
-#   - libsodium (ISC, Prefab AAR): Ed25519 / X25519 / SHA-512 per pair-setup/verify
+# Scopo: compila libirplay_native.so (motore RTSP / parser NAL) e collega:
 #   - playfair  (GPL-3): decifratura della chiave FairPlay ricevuta in fp-setup
-#   - irplay_core (Rust, app/src/main/rust): il codice che si migra da C++ a Rust, con
-#     il decoder ALAC di Symphonia (MPL-2.0) per l'audio "solo musica"
+#   - irplay_core (Rust, app/src/main/rust): parser di rete, crittografia (RustCrypto,
+#     dalek, AES con le istruzioni ARMv8), HEVC e il decoder ALAC di Symphonia (MPL-2.0)
 # ==============================================================================
 cmake_minimum_required(VERSION 3.22.1)
 project("irplay_native" C CXX)
@@ -17,21 +15,6 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 set(THIRD_PARTY ${CMAKE_CURRENT_SOURCE_DIR}/third_party)
-
-# --- mbedTLS: compiliamo solo la libreria crypto -------------------------------
-# GEN_FILES OFF: i sorgenti generati esistono già (make generated_files), quindi
-#   la build Gradle non dipende da Python o Jinja2.
-# FATAL_WARNINGS OFF: i clang NDK più recenti aggiungono warning sconosciuti a
-#   mbedTLS che bloccherebbero la build senza alcun impatto sulla sicurezza.
-set(ENABLE_PROGRAMS OFF CACHE BOOL "" FORCE)
-set(ENABLE_TESTING OFF CACHE BOOL "" FORCE)
-set(GEN_FILES OFF CACHE BOOL "" FORCE)
-set(MBEDTLS_FATAL_WARNINGS OFF CACHE BOOL "" FORCE)
-set(DISABLE_PACKAGE_CONFIG_AND_INSTALL ON CACHE BOOL "" FORCE)
-add_subdirectory(${THIRD_PARTY}/mbedtls EXCLUDE_FROM_ALL)
-
-# --- libsodium: pacchetto Prefab dall'AAR in app/libs ----------------------------
-find_package(sodium REQUIRED CONFIG)
 
 # --- playfair: target nostro al posto del CMakeLists originale -----------------
 # Il file originale usa include_directories() globale, che "sporcherebbe" tutti i
@@ -87,7 +70,6 @@ add_library(${CMAKE_PROJECT_NAME} SHARED
         plist_reader.cpp
         plist_writer.cpp
         sps_rewriter.cpp
-        srp_server.cpp
         now_playing.cpp)
 
 # Hardening: questo codice legge pacchetti da una rete non fidata (la LAN).
@@ -103,8 +85,6 @@ target_link_options(${CMAKE_PROJECT_NAME} PRIVATE
 
 find_library(log-lib log)
 target_link_libraries(${CMAKE_PROJECT_NAME}
-        sodium::sodium-static
-        mbedcrypto
         playfair
         irplay_core
         ${log-lib}

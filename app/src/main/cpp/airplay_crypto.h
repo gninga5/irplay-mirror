@@ -17,8 +17,10 @@
  *  6. Audio:       AES-128-CBC con chiave K e IV = "eiv", IV ripartito a ogni pacchetto RTP;
  *                  i byte finali che non formano un blocco da 16 sono in chiaro.
  *
- * Il segreto Ed25519 sta in memoria allocata con sodium_malloc (pagine di guardia,
- * esclusa dai core dump, azzerata al rilascio) e in sola lettura dopo la creazione.
+ * Implementazione in Rust (rust/src/pairing.rs, srp.rs, aes128.rs: RustCrypto e dalek, AES con
+ * le istruzioni ARMv8 dove ci sono). Qui solo involucri: segreti, chiavi di ciclo e stati
+ * restano in memoria di Rust dietro handle opachi, azzerati al rilascio; il segreto X25519
+ * non esce mai (sessionKey lo usa al suo interno). FairPlay resta in C (playfair).
  */
 #pragma once
 
@@ -29,14 +31,28 @@
 #include <string>
 #include <vector>
 
-#include <mbedtls/aes.h>
+#include "rust_core.h"
 
-#include "srp_server.h"
+namespace irplay::srp {
+    constexpr size_t kSessionKeySize = 40;   // 2 x SHA-1 (variante Apple)
+    constexpr size_t kProofSize = 20;        // SHA-1
+}
 
 namespace irplay::crypto {
 
-    /** Inizializza libsodium. Va chiamata prima di tutto il resto; idempotente. */
-    bool init();
+    /** Compatibilità: le primitive non richiedono inizializzazione. */
+    inline bool init() { return true; }
+
+    /** Azzera memoria in modo che il compilatore non possa eliminarlo. */
+    inline void secureZero(void* p, size_t n) { irplay_secure_zero(static_cast<uint8_t*>(p), n); }
+
+    /** Confronto a tempo costante di due buffer di n byte. */
+    inline bool equalConstantTime(const void* a, const void* b, size_t n) {
+        return irplay_ct_equal(static_cast<const uint8_t*>(a), static_cast<const uint8_t*>(b), n);
+    }
+
+    /** Intero uniforme in [0, n) dal generatore del kernel. */
+    inline bool randomBelow(uint32_t n, uint32_t& out) { return irplay_random_below(n, &out); }
 
     class Ed25519Identity {
     public:
@@ -48,17 +64,21 @@ namespace irplay::crypto {
 
         const uint8_t* publicKey() const { return pk_.data(); }
         bool sign(uint8_t sig[64], const uint8_t* msg, size_t len) const;
+        const IrplayIdentity* handle() const { return h_; }
 
     private:
         Ed25519Identity() = default;
         std::array<uint8_t, 32> pk_{};
-        unsigned char* sk_ = nullptr;   // 64 byte, sodium_malloc
+        IrplayIdentity* h_ = nullptr;
     };
 
     /** Stato del pairing di una connessione RTSP. Non thread-safe: la usa solo il thread della connessione. */
     class PairingSession {
     public:
+        PairingSession();
         ~PairingSession();
+        PairingSession(const PairingSession&) = delete;
+        PairingSession& operator=(const PairingSession&) = delete;
 
         /** POST /pair-setup: body = chiave pubblica Ed25519 del client (32 byte). */
         bool setup(const uint8_t* body, size_t len);
@@ -67,9 +87,9 @@ namespace irplay::crypto {
         /** POST /pair-verify, fase 2 (body[0] == 0): verifica la firma del client. */
         bool verifyStep2(const uint8_t* body, size_t len);
 
-        bool verified() const { return state_ == State::Verified; }
+        bool verified() const;
         /** Chiave Ed25519 del client ricevuta in pair-verify fase 1 (valida dopo verifyStep1). */
-        const uint8_t* clientEdKey() const { return theirEdPk_.data(); }
+        const uint8_t* clientEdKey() const;
 
         // ---- pair-setup-pin (PIN mostrato sulla TV) ----
         // Fase 1: user = identificativo inviato da iOS, pin = 4 cifre. Restituisce salt e B.
@@ -83,23 +103,15 @@ namespace irplay::crypto {
                          const uint8_t* tag, size_t lenTag,
                          std::array<uint8_t, 32>& outEpk, std::array<uint8_t, 16>& outTag);
         /** true dopo un pair-setup-pin completo su questa connessione. */
-        bool pinAuthenticated() const { return pinDone_; }
+        bool pinAuthenticated() const;
         /** Chiave Ed25519 del client autenticata con il PIN (valida se pinAuthenticated()). */
-        const uint8_t* pinClientKey() const { return pinClientPk_.data(); }
-        /** Segreto X25519 condiviso; valido solo se verified(). */
-        const uint8_t* sharedSecret() const { return shared_.data(); }
+        const uint8_t* pinClientKey() const;
+        /** K = SHA-512(fpKey || S)[0..15] (punto 4 della catena); false senza pair-verify. */
+        bool sessionKey(const uint8_t fpKey[16], uint8_t out[16]) const;
 
     private:
-        enum class State { Idle, SetupDone, Step1Done, Verified };
-        void deriveKeyIv(uint8_t key[16], uint8_t iv[16]) const;
-        void wipe();
-
-        State state_ = State::Idle;
-        std::array<uint8_t, 32> ourEcdhPk_{}, ourEcdhSk_{}, theirEcdhPk_{}, theirEdPk_{}, shared_{};
-        std::unique_ptr<srp::Server> srp_;
-        bool pinProven_ = false;
-        bool pinDone_ = false;
-        std::array<uint8_t, 32> pinClientPk_{};
+        IrplayPairing* h_ = nullptr;
+        mutable std::array<uint8_t, 32> clientEdKey_{}, pinClientKey_{};
     };
 
     class FairPlay {
@@ -115,42 +127,36 @@ namespace irplay::crypto {
         bool haveKeyMsg_ = false;
     };
 
-    /** K = SHA-512(fpKey || shared)[0..15] (punto 4 della catena). */
-    void deriveSessionKey(const uint8_t fpKey[16], const uint8_t shared[32], uint8_t out[16]);
     /** Chiave e IV del flusso video (punto 5). */
     void deriveMirrorKey(const uint8_t sessionKey[16], uint64_t streamConnectionId, uint8_t key[16], uint8_t iv[16]);
 
     /** AES-128-CTR con keystream continuo tra chiamate successive (come il flusso video di iOS). */
     class AesCtr {
     public:
-        AesCtr(const uint8_t key[16], const uint8_t iv[16]);
-        ~AesCtr();
+        AesCtr(const uint8_t key[16], const uint8_t iv[16]) : h_(irplay_ctr_new(key, iv)) {}
+        ~AesCtr() { irplay_ctr_free(h_); }
         AesCtr(const AesCtr&) = delete;
         AesCtr& operator=(const AesCtr&) = delete;
-        void apply(uint8_t* data, size_t len);
+        void apply(uint8_t* data, size_t len) { if (len > 0) irplay_ctr_apply(h_, data, len); }
         /** Consuma len byte di keystream senza produrre output. */
-        void skip(size_t len);
+        void skip(size_t len) { irplay_ctr_skip(h_, len); }
 
     private:
-        mbedtls_aes_context ctx_;
-        unsigned char counter_[16];
-        unsigned char block_[16];
-        size_t off_ = 0;
+        IrplayCtr* h_;
     };
 
     /** Decifratura audio (punto 6): chiave fissa, IV ripartito a ogni pacchetto. */
     class AudioDecryptor {
     public:
-        AudioDecryptor(const uint8_t key[16], const uint8_t iv[16]);
-        ~AudioDecryptor();
+        AudioDecryptor(const uint8_t key[16], const uint8_t iv[16]) : h_(irplay_cbc_new(key, iv)) {}
+        ~AudioDecryptor() { irplay_cbc_free(h_); }
         AudioDecryptor(const AudioDecryptor&) = delete;
         AudioDecryptor& operator=(const AudioDecryptor&) = delete;
         /** Decifra in place i blocchi completi; la coda < 16 byte resta com'è (è in chiaro). */
-        void decrypt(uint8_t* data, size_t len);
+        void decrypt(uint8_t* data, size_t len) { if (len >= 16) irplay_cbc_decrypt(h_, data, len); }
 
     private:
-        mbedtls_aes_context ctx_;
-        unsigned char iv_[16];
+        IrplayCbc* h_;
     };
 
 } // namespace irplay::crypto

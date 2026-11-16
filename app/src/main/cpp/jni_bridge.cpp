@@ -25,9 +25,9 @@
 #include <string>
 #include <vector>
 
-#include <sodium.h>
 
 #include "airplay_server.h"
+#include "airplay_crypto.h"
 #include "log.h"
 
 namespace {
@@ -381,7 +381,7 @@ Java_com_irplay_tv_core_NativeBridge_startServer(
     if (gServer) gServer->stop();
     gServer = std::make_unique<irplay::AirPlayServer>(std::make_shared<JavaSink>());
     const int port = gServer->start(static_cast<uint16_t>(preferredPort), info, s, access);
-    sodium_memzero(s, sizeof s);
+    irplay::crypto::secureZero(s, sizeof s);
     if (port < 0) gServer.reset();
     return port;
 }
@@ -419,29 +419,18 @@ Java_com_irplay_tv_core_NativeBridge_stopMedia(JNIEnv*, jclass) {
     if (gServer) gServer->stopMedia();
 }
 
-// Calcola la chiave pubblica Ed25519 dal seed (RFC 8032), senza conservare il segreto.
-// Seed e chiave privata espansa vengono azzerati con sodium_memzero, che il
-// compilatore non può eliminare in ottimizzazione (al contrario di memset su un
-// buffer che non viene più letto).
+// Calcola la chiave pubblica Ed25519 dal seed (RFC 8032), senza conservare il segreto:
+// l'identità Rust azzera la chiave privata quando viene liberata, il seed è azzerato qui.
 JNIEXPORT jbyteArray JNICALL
 Java_com_irplay_tv_core_NativeBridge_ed25519PublicKey(JNIEnv* env, jclass, jbyteArray seed) {
-    if (seed == nullptr || env->GetArrayLength(seed) != crypto_sign_SEEDBYTES) return nullptr;
-    if (sodium_init() < 0) return nullptr;
-
-    unsigned char s[crypto_sign_SEEDBYTES];
-    unsigned char pk[crypto_sign_PUBLICKEYBYTES];
-    unsigned char sk[crypto_sign_SECRETKEYBYTES];
-    env->GetByteArrayRegion(seed, 0, crypto_sign_SEEDBYTES, reinterpret_cast<jbyte*>(s));
-
-    const int rc = crypto_sign_seed_keypair(pk, sk, s);
-    sodium_memzero(s, sizeof s);
-    sodium_memzero(sk, sizeof sk);
-    if (rc != 0) return nullptr;
-
-    jbyteArray out = env->NewByteArray(crypto_sign_PUBLICKEYBYTES);
-    if (out != nullptr) {
-        env->SetByteArrayRegion(out, 0, crypto_sign_PUBLICKEYBYTES, reinterpret_cast<const jbyte*>(pk));
-    }
+    if (seed == nullptr || env->GetArrayLength(seed) != 32) return nullptr;
+    uint8_t s[32];
+    env->GetByteArrayRegion(seed, 0, 32, reinterpret_cast<jbyte*>(s));
+    const auto id = irplay::crypto::Ed25519Identity::fromSeed(s);
+    irplay::crypto::secureZero(s, sizeof s);
+    if (!id) return nullptr;
+    jbyteArray out = env->NewByteArray(32);
+    if (out != nullptr) env->SetByteArrayRegion(out, 0, 32, reinterpret_cast<const jbyte*>(id->publicKey()));
     return out;
 }
 

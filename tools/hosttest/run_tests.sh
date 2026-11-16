@@ -2,12 +2,13 @@
 # Test del motore nativo sul Mac (senza Android): simula un iPhone contro AirPlayServer.
 # Copre pairing, FairPlay, SETUP, video AES-CTR, audio AES-CBC, watchdog, TEARDOWN,
 # input malformati e fuzzing del parser plist. Compilato con ASan + UBSan.
-# Requisiti: Xcode Command Line Tools, Homebrew libsodium (brew install libsodium),
+# Requisiti: Xcode Command Line Tools, Homebrew libsodium (brew install libsodium) e il
+# submodule Mbed TLS (git submodule update --init): solo per fare la parte dell'iPhone;
 # CMake e Ninja (quelli dell'Android SDK vanno bene).
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
-C=$ROOT/app/src/main/cpp; P=$C/third_party/playfair; M=$C/third_party/mbedtls
+C=$ROOT/app/src/main/cpp; P=$C/third_party/playfair; M=$HERE/third_party/mbedtls
 OUT=$HERE/build; mkdir -p "$OUT"
 SODIUM=$(brew --prefix libsodium)
 SDK=${ANDROID_HOME:-$HOME/Library/Android/sdk}
@@ -44,7 +45,7 @@ export PATH="$(dirname "$CARGO"):$PATH"   # i proxy di rustup cercano rustc nel 
 (cd "$RUSTDIR" && CARGO_TARGET_DIR="$OUT/rust-target" "$CARGO" build --release --locked -q)
 RUSTLIB="$OUT/rust-target/release/libirplay_core.a"
 
-SRC="$C/alac_decoder.cpp $C/now_playing.cpp $C/srp_server.cpp $C/sps_rewriter.cpp $C/airplay_server.cpp $C/airplay_media.cpp $C/hls_playlist.cpp $C/rtsp_message.cpp $C/airplay_info.cpp $C/airplay_crypto.cpp $C/media_streams.cpp $C/nal_parser.cpp $C/net_util.cpp $C/plist_reader.cpp $C/plist_writer.cpp"
+SRC="$C/alac_decoder.cpp $C/now_playing.cpp $C/sps_rewriter.cpp $C/airplay_server.cpp $C/airplay_media.cpp $C/hls_playlist.cpp $C/rtsp_message.cpp $C/airplay_info.cpp $C/airplay_crypto.cpp $C/media_streams.cpp $C/nal_parser.cpp $C/net_util.cpp $C/plist_reader.cpp $C/plist_writer.cpp"
 clang++ -std=c++20 -Wall -Wextra -Wformat=2 -Werror -Wno-missing-field-initializers \
   -fsanitize=address,undefined -fno-omit-frame-pointer -g -O1 \
   -I"$C" -I"$P" -I"$M/include" -I"$SODIUM/include" -I"$HERE/alac_enc" \
@@ -70,6 +71,16 @@ clang++ -std=c++20 -Wall -Wextra -Wformat=2 -Werror -Wno-missing-field-initializ
   "$HERE/parser_diff.cpp" "$HERE"/reference/*.cpp "$C/plist_reader.cpp" "$C/plist_writer.cpp" "$C/now_playing.cpp" \
   "$C/hls_playlist.cpp" "$C/rtsp_message.cpp" "$C/net_util.cpp" "$RUSTLIB" -o "$OUT/parser_diff"
 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 "$OUT/parser_diff" "${IRPLAY_DIFF_ITERS:-300000}"
+
+# Crittografia (Rust) contro libsodium e mbedTLS, che qui fanno solo da riferimento.
+clang++ -std=c++20 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer -g -O1 \
+  -I"$C" -I"$P" -I"$M/include" -I"$SODIUM/include" "$HERE/crypto_diff.cpp" "$C/airplay_crypto.cpp" "$OUT"/pf_*.o \
+  "$RUSTLIB" "$OUT/mbed/library/libmbedcrypto.a" "$SODIUM/lib/libsodium.a" -o "$OUT/crypto_diff"
+UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 "$OUT/crypto_diff" "${IRPLAY_CRYPTO_ITERS:-20000}"
+
+# Abbinamento con PIN: server Rust contro il client SRP in Python, più volte.
+clang++ -std=c++20 -Wall -Wextra -Werror -O1 -I"$C" "$HERE/srp_stress.cpp" "$RUSTLIB" -o "$OUT/srp_stress"
+(cd "$HERE" && "$OUT/srp_stress" "${IRPLAY_SRP_ITERS:-200}")
 
 # HEVC (rust/src/hevc.rs): flussi generati con VideoToolbox, con e senza riordino e in 4K.
 # I parametri riscritti devono dare immagini identiche agli originali, e fotogrammi chiave e

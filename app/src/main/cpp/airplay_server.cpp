@@ -30,8 +30,6 @@
 #include <unistd.h>
 #include <utility>
 
-#include <mbedtls/platform_util.h>
-#include <sodium.h>
 
 #include "log.h"
 #include "media_streams.h"
@@ -286,10 +284,10 @@ namespace irplay {
         std::lock_guard<std::mutex> lock(pinMutex_);
         if (pinMode_ == PinMode::Off) return true;
         // PIN appena inserito su questa connessione: vale solo per la chiave che l'ha usato.
-        if (st.pairing.pinAuthenticated()) return sodium_memcmp(clientEdKey, st.pairing.pinClientKey(), 32) == 0;
+        if (st.pairing.pinAuthenticated()) return crypto::equalConstantTime(clientEdKey, st.pairing.pinClientKey(), 32);
         if (pinMode_ == PinMode::Always) return false;
         for (const auto& k : trusted_) {
-            if (sodium_memcmp(k.data(), clientEdKey, 32) == 0) return true;
+            if (crypto::equalConstantTime(k.data(), clientEdKey, 32)) return true;
         }
         return false;
     }
@@ -305,11 +303,13 @@ namespace irplay {
         const int64_t now = monotonicMs();
         isNew = pin_.empty() || now > pinExpiresMs_;
         if (isNew) {
-            // 4 cifre uniformi dal generatore crittografico (randombytes_uniform evita il bias del modulo).
+            // 4 cifre uniformi dal generatore del kernel (senza il bias del modulo).
+            uint32_t digits = 0;
+            if (!crypto::randomBelow(10000, digits)) return {};
             char buf[8];
-            std::snprintf(buf, sizeof buf, "%04u", static_cast<unsigned>(randombytes_uniform(10000)));
+            std::snprintf(buf, sizeof buf, "%04u", static_cast<unsigned>(digits));
             pin_ = buf;
-            sodium_memzero(buf, sizeof buf);
+            crypto::secureZero(buf, sizeof buf);
             pinExpiresMs_ = now + kPinLifetimeMs;
             pinFailures_ = 0;
         }
@@ -330,9 +330,13 @@ namespace irplay {
             }
             pin = currentOrNewPinLocked(isNew);
         }
+        if (pin.empty()) {   // generatore casuale non disponibile: nessun PIN prevedibile
+            LOGE("PIN non generato");
+            return sendResponse(st.fd, &req, 503, "Service Unavailable");
+        }
         LOGI(isNew ? "Richiesto il PIN: mostrato sulla TV" : "Richiesto di nuovo il PIN: resta quello a schermo");
         sink_->onPinRequested(pin);   // il PIN non va mai nel log, solo a schermo
-        sodium_memzero(pin.data(), pin.size());
+        crypto::secureZero(pin.data(), pin.size());
         return sendResponse(st.fd, &req, 200, "OK");
     }
 
@@ -383,13 +387,14 @@ namespace irplay {
                 }
             }
             if (showNew) {
+                if (pin.empty()) return fail();
                 sink_->onPinRequested(pin);
-                sodium_memzero(pin.data(), pin.size());
+                crypto::secureZero(pin.data(), pin.size());
                 return fail();
             }
             std::vector<uint8_t> salt, B;
             const bool ok = st.pairing.pinBegin(*user->asString(), pin, salt, B);
-            sodium_memzero(pin.data(), pin.size());
+            crypto::secureZero(pin.data(), pin.size());
             if (!ok) return fail();
             plist::Dict r;
             r.set("pk", std::move(B)).set("salt", std::move(salt));
@@ -449,7 +454,7 @@ namespace irplay {
                     std::array<uint8_t, 32> key{};
                     std::memcpy(key.data(), st.pairing.pinClientKey(), 32);
                     bool known = false;
-                    for (const auto& k : trusted_) known = known || sodium_memcmp(k.data(), key.data(), 32) == 0;
+                    for (const auto& k : trusted_) known = known || crypto::equalConstantTime(k.data(), key.data(), 32);
                     if (!known) {
                         if (trusted_.size() >= kMaxTrusted) trusted_.erase(trusted_.begin());   // il più vecchio
                         trusted_.push_back(key);
@@ -501,20 +506,24 @@ namespace irplay {
             if (pinRequired && !st.pairing.verified()) {
                 // Con il PIN attivo solo un dispositivo che ha completato pair-verify (e quindi è
                 // stato autorizzato) può aprire una sessione.
-                mbedtls_platform_zeroize(fpKey, sizeof fpKey);
+                crypto::secureZero(fpKey, sizeof fpKey);
                 LOGW("SETUP senza pairing con PIN attivo: rifiutato");
                 sendResponse(fd, &req, 470, "Connection Authorization Required");
                 return false;
             }
             if (st.pairing.verified()) {
-                crypto::deriveSessionKey(fpKey, st.pairing.sharedSecret(), key);
+                if (!st.pairing.sessionKey(fpKey, key)) {
+                    crypto::secureZero(fpKey, sizeof fpKey);
+                    sendResponse(fd, &req, 500, "Internal Server Error");
+                    return false;
+                }
             } else {
                 // Client che salta pair-verify (es. alcuni mittenti per Windows): la chiave
                 // FairPlay si usa così com'è, come fa UxPlay.
                 LOGW("SETUP senza pair-verify: chiave FairPlay non derivata");
                 std::memcpy(key, fpKey, 16);
             }
-            mbedtls_platform_zeroize(fpKey, sizeof fpKey);
+            crypto::secureZero(fpKey, sizeof fpKey);
 
             bool busy;
             {
@@ -523,7 +532,7 @@ namespace irplay {
                 if (!busy) sessionOwner_ = st.client;
             }
             if (busy) {
-                mbedtls_platform_zeroize(key, sizeof key);
+                crypto::secureZero(key, sizeof key);
                 LOGW("Un altro dispositivo sta già trasmettendo: SETUP rifiutato");
                 sendResponse(fd, &req, 453, "Not Enough Bandwidth");
                 return false;
@@ -532,7 +541,7 @@ namespace irplay {
             const bool newSession = !st.session;
             st.session.reset();   // un SETUP ripetuto sulla stessa connessione riparte da zero
             st.session = std::make_unique<Session>(*sink_, st.peer, key, eiv->data());
-            mbedtls_platform_zeroize(key, sizeof key);
+            crypto::secureZero(key, sizeof key);
 
             const uint64_t* tp = findUInt(*d, "timingPort");
             const uint16_t remoteTiming = (tp && *tp <= 65535) ? static_cast<uint16_t>(*tp) : 0;
@@ -658,8 +667,7 @@ namespace irplay {
             trusted_ = access.trusted;
             if (trusted_.size() > kMaxTrusted) trusted_.resize(kMaxTrusted);
         }
-        if (!crypto::init()) { LOGE("libsodium non inizializzata"); return -1; }
-
+        
         identity_ = crypto::Ed25519Identity::fromSeed(seed);
         if (!identity_ || info.publicKey.size() != 32 ||
             std::memcmp(identity_->publicKey(), info.publicKey.data(), 32) != 0) {
@@ -692,7 +700,8 @@ namespace irplay {
         if (irplay_rust_abi_version() != kRustAbiVersion) {
             LOGE("Componente Rust con interfaccia %u, attesa %u", irplay_rust_abi_version(), kRustAbiVersion);
         } else {
-            LOGI("Componente Rust attivo (interfaccia %u)", kRustAbiVersion);
+            LOGI("Componente Rust attivo (interfaccia %u), AES %s", kRustAbiVersion,
+                 irplay_aes_arm_hardware() ? "con le istruzioni ARMv8" : "RustCrypto");
         }
         return port;
     }

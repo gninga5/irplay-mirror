@@ -20,7 +20,6 @@
 #include <cstring>
 #include <vector>
 
-#include <mbedtls/platform_util.h>
 
 #include "alac_decoder.h"
 #include "log.h"
@@ -71,8 +70,8 @@ namespace irplay {
         uint8_t key[16], iv[16];
         crypto::deriveMirrorKey(sessionKey, streamConnectionId, key, iv);
         aes_ = std::make_unique<crypto::AesCtr>(key, iv);
-        mbedtls_platform_zeroize(key, sizeof key);
-        mbedtls_platform_zeroize(iv, sizeof iv);
+        crypto::secureZero(key, sizeof key);
+        crypto::secureZero(iv, sizeof iv);
     }
 
     MirrorStream::~MirrorStream() { stop(); }
@@ -587,8 +586,8 @@ namespace irplay {
         stopAudio();
         stopMirror();
         if (timing_) timing_->stop();
-        mbedtls_platform_zeroize(key_, sizeof key_);
-        mbedtls_platform_zeroize(iv_, sizeof iv_);
+        crypto::secureZero(key_, sizeof key_);
+        crypto::secureZero(iv_, sizeof iv_);
     }
 
     int Session::startTiming(uint16_t remotePort) {

@@ -45,7 +45,7 @@ export PATH="$(dirname "$CARGO"):$PATH"   # i proxy di rustup cercano rustc nel 
 (cd "$RUSTDIR" && CARGO_TARGET_DIR="$OUT/rust-target" "$CARGO" build --release --locked -q)
 RUSTLIB="$OUT/rust-target/release/libirplay_core.a"
 
-SRC="$C/alac_decoder.cpp $C/now_playing.cpp $C/sps_rewriter.cpp $C/airplay_server.cpp $C/airplay_media.cpp $C/hls_playlist.cpp $C/rtsp_message.cpp $C/airplay_info.cpp $C/airplay_crypto.cpp $C/media_streams.cpp $C/nal_parser.cpp $C/net_util.cpp $C/plist_reader.cpp $C/plist_writer.cpp"
+SRC="$C/alac_decoder.cpp $C/now_playing.cpp $C/airplay_server.cpp $C/airplay_media.cpp $C/hls_playlist.cpp $C/rtsp_message.cpp $C/airplay_info.cpp $C/airplay_crypto.cpp $C/media_streams.cpp $C/nal_parser.cpp $C/net_util.cpp $C/plist_reader.cpp $C/plist_writer.cpp"
 clang++ -std=c++20 -Wall -Wextra -Wformat=2 -Werror -Wno-missing-field-initializers \
   -fsanitize=address,undefined -fno-omit-frame-pointer -g -O1 \
   -I"$C" -I"$P" -I"$M/include" -I"$SODIUM/include" -I"$HERE/alac_enc" \
@@ -60,7 +60,7 @@ ASAN_OPTIONS=detect_leaks=0 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 ./s
 # Riscrittura SPS: unit test + fuzz, poi verifica indipendente con il decoder di VideoToolbox.
 cd "$OUT"
 swiftc -O "$HERE/gen_h264.swift" -o gen_h264 2>/dev/null && ./gen_h264 >/dev/null
-clang++ -std=c++20 -Wall -Wextra -Werror -fsanitize=address,undefined -g -I"$C" "$HERE/sps_test.cpp" "$C/sps_rewriter.cpp" "$C/nal_parser.cpp" -o sps_test
+clang++ -std=c++20 -Wall -Wextra -Werror -fsanitize=address,undefined -g -I"$C" "$HERE/sps_test.cpp" "$C/nal_parser.cpp" "$RUSTLIB" -o sps_test
 ./sps_test
 swiftc -O "$HERE/vt_check.swift" -o vt_check 2>/dev/null && ./vt_check
 
@@ -69,7 +69,7 @@ swiftc -O "$HERE/vt_check.swift" -o vt_check 2>/dev/null && ./vt_check
 clang++ -std=c++20 -Wall -Wextra -Wformat=2 -Werror -Wno-missing-field-initializers \
   -fsanitize=address,undefined -fno-omit-frame-pointer -g -O1 -I"$C" -I"$HERE/reference" \
   "$HERE/parser_diff.cpp" "$HERE"/reference/*.cpp "$C/plist_reader.cpp" "$C/plist_writer.cpp" "$C/now_playing.cpp" \
-  "$C/hls_playlist.cpp" "$C/rtsp_message.cpp" "$C/net_util.cpp" "$RUSTLIB" -o "$OUT/parser_diff"
+  "$C/hls_playlist.cpp" "$C/rtsp_message.cpp" "$C/net_util.cpp" "$C/nal_parser.cpp" "$RUSTLIB" -o "$OUT/parser_diff"
 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 "$OUT/parser_diff" "${IRPLAY_DIFF_ITERS:-300000}"
 
 # Crittografia (Rust) contro libsodium e mbedTLS, che qui fanno solo da riferimento.

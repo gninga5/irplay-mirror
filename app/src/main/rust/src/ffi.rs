@@ -309,7 +309,7 @@ pub unsafe extern "C" fn irplay_bytes_free(list: *mut ByteList) {
     }
 }
 
-fn into_list(v: Option<Vec<Vec<u8>>>) -> *mut ByteList {
+pub(crate) fn into_list(v: Option<Vec<Vec<u8>>>) -> *mut ByteList {
     v.map_or(std::ptr::null_mut(), |v| Box::into_raw(Box::new(ByteList(v))))
 }
 
@@ -374,4 +374,58 @@ pub unsafe extern "C" fn irplay_hls_expand_condensed(text: *const u8, len: usize
     // SAFETY: contratto della funzione.
     let Some(t) = (unsafe { input(text, len) }) else { return std::ptr::null_mut() };
     into_list(guard(None, || hls::expand_condensed(t).map(|o| vec![o])))
+}
+
+// ---------------------------------------------------------------------------- H.264
+
+/// AVCC -> Annex-B sul posto (vedi [`crate::h264::avcc_to_annexb`]). false = frame da scartare.
+///
+/// # Safety
+/// `buf` deve puntare a `len` byte scrivibili; `keyframe` e `b_slice` scrivibili.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn irplay_h264_annexb(buf: *mut u8, len: usize, check_b: bool, keyframe: *mut bool, b_slice: *mut bool) -> bool {
+    if buf.is_null() || len == 0 || keyframe.is_null() || b_slice.is_null() {
+        return false;
+    }
+    // SAFETY: contratto della funzione.
+    let d = unsafe { std::slice::from_raw_parts_mut(buf, len) };
+    let Some(f) = guard(None, || crate::h264::avcc_to_annexb(d, check_b)) else { return false };
+    // SAFETY: scrivibili per contratto.
+    unsafe {
+        *keyframe = f.keyframe;
+        *b_slice = f.b_slice;
+    }
+    true
+}
+
+/// Record avcC -> [SPS, PPS] con start code; null se non valido.
+///
+/// # Safety
+/// `data` deve puntare a `len` byte leggibili.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn irplay_h264_parse_avcc(data: *const u8, len: usize) -> *mut ByteList {
+    // SAFETY: contratto della funzione.
+    let Some(d) = (unsafe { input(data, len) }) else { return std::ptr::null_mut() };
+    into_list(guard(None, || crate::h264::parse_avcc(d).map(|(s, p)| vec![s, p])))
+}
+
+/// SPS riscritto per bassa latenza: [SPS]; null se non serve o non è possibile.
+///
+/// # Safety
+/// `sps` deve puntare a `len` byte leggibili.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn irplay_h264_patch_sps(sps: *const u8, len: usize) -> *mut ByteList {
+    // SAFETY: contratto della funzione.
+    let Some(d) = (unsafe { input(sps, len) }) else { return std::ptr::null_mut() };
+    into_list(guard(None, || crate::h264::patch_sps_low_latency(d).map(|o| vec![o])))
+}
+
+/// NAL senza start code: true se è uno slice B.
+///
+/// # Safety
+/// `nal` deve puntare a `len` byte leggibili.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn irplay_h264_slice_is_b(nal: *const u8, len: usize) -> bool {
+    // SAFETY: contratto della funzione.
+    unsafe { input(nal, len) }.is_some_and(|n| guard(false, || crate::h264::slice_is_b(n)))
 }

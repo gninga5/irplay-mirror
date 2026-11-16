@@ -183,8 +183,8 @@ Serve anche Rust: installa `rustup`, e la compilazione prende da sola il compila
 passando da C++ a Rust, a cominciare dal codice che legge i dati dalla rete; quella parte la
 compila Cargo e finisce nella stessa libreria nativa. Sono già in Rust i parser dei plist
 binari, dei messaggi RTSP/HTTP, dei metadati DMAP e delle playlist HLS, tutta la crittografia
-(pairing con e senza PIN, chiavi di sessione, decifratura di audio e video), la gestione di HEVC
-e il decoder ALAC. I vecchi parser C++ restano in `tools/hosttest/reference` solo come metro di
+(pairing con e senza PIN, chiavi di sessione, decifratura di audio e video), la gestione di
+H.264 e HEVC (riscrittura dell'SPS compresa) e il decoder ALAC. I vecchi parser C++ restano in `tools/hosttest/reference` solo come metro di
 paragone: `parser_diff` dà a entrambi milioni di input generati e alterati e si ferma alla
 prima differenza.
 

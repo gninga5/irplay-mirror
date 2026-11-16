@@ -175,7 +175,7 @@ native engine is moving from C++ to Rust, starting with the code that reads data
 network; that crate is built by Cargo and linked into the same native library. Already in
 Rust: the parsers for binary plists, RTSP/HTTP messages, DMAP metadata and HLS playlists, all
 the cryptography (pairing with and without PIN, session keys, audio and video decryption), the
-HEVC handling and the ALAC decoder. The old C++ parsers live on in `tools/hosttest/reference`
+H.264 and HEVC handling (including the SPS rewrite) and the ALAC decoder. The old C++ parsers live on in `tools/hosttest/reference`
 only as a yardstick: `parser_diff` feeds both millions of generated and corrupted inputs and
 fails on the first difference.
 

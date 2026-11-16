@@ -13,7 +13,9 @@
 #include <string>
 #include <vector>
 
+#include "nal_parser.h"
 #include "reference.h"
+#include "sps_rewriter.h"
 
 using Bytes = std::vector<uint8_t>;
 using namespace irplay;
@@ -308,12 +310,131 @@ static void hlsDiff(long iters) {
     printf("URL HLS:   %ld input, %ld sicuri, differenze %ld\n", iters, ok, failures - before);
 }
 
+
+// -------------------------------------------------------------------------------- H.264
+
+struct Bits {
+    Bytes out; size_t n = 0;
+    void bit(unsigned b) { if (n % 8 == 0) out.push_back(0); if (b) out.back() |= (uint8_t) (0x80 >> (n % 8)); ++n; }
+    void u(int k, uint64_t v) { for (int i = k - 1; i >= 0; --i) bit((unsigned) ((v >> i) & 1)); }
+    void ue(uint32_t v) { uint64_t x = (uint64_t) v + 1; int l = 0; while ((x >> l) > 1) ++l; for (int i = 0; i < l; ++i) bit(0); for (int i = l; i >= 0; --i) bit((unsigned) ((x >> i) & 1)); }
+    void se(int32_t v) { ue(v > 0 ? (uint32_t) (2 * v - 1) : (uint32_t) (-2 * (int64_t) v)); }
+};
+
+static Bytes escape03(const Bytes& r) { Bytes o; int z = 0; for (uint8_t b : r) { if (z >= 2 && b <= 3) { o.push_back(3); z = 0; } o.push_back(b); z = b == 0 ? z + 1 : 0; } return o; }
+
+static uint32_t smallUe() { return R(4) == 0 ? (uint32_t) R(1000) : (uint32_t) R(8); }
+
+static void hrd(Bits& w) {
+    const uint32_t cnt = R(10) == 0 ? 40 : (uint32_t) R(4);
+    w.ue(cnt); w.u(4, R(16)); w.u(4, R(16));
+    for (uint32_t i = 0; i <= cnt && i < 40; ++i) { w.ue(smallUe()); w.ue(smallUe()); w.u(1, R(2)); }
+    w.u(20, R(1 << 20));
+}
+
+static Bytes randomSps() {
+    static const uint32_t profiles[] = {66, 77, 88, 100, 110, 122, 244, 44, 83, 86, 118, 128, 138, 139, 134, 135};
+    Bits w;
+    const uint32_t profile = profiles[R(16)];
+    w.u(8, profile); w.u(8, R(256)); w.u(8, R(256)); w.ue(R(32));
+    bool high = false;
+    for (uint32_t p : {100u, 110u, 122u, 244u, 44u, 83u, 86u, 118u, 128u, 138u, 139u, 134u, 135u}) high = high || p == profile;
+    if (high) {
+        const uint32_t chroma = (uint32_t) R(4);
+        w.ue(chroma); if (chroma == 3) w.u(1, R(2));
+        w.ue(R(7)); w.ue(R(7)); w.u(1, R(2));
+        const bool matrix = R(4) == 0; w.u(1, matrix);
+        if (matrix) for (int i = 0; i < (chroma == 3 ? 12 : 8); ++i) { const bool present = R(2); w.u(1, present); if (present) for (int j = 0, n = i < 6 ? 16 : 64; j < n; ++j) w.se((int32_t) R(20) - 10); }
+    }
+    w.ue(R(12));
+    const uint32_t poc = (uint32_t) R(3); w.ue(poc);
+    if (poc == 0) w.ue(R(12));
+    else if (poc == 1) { w.u(1, R(2)); w.se((int32_t) R(100) - 50); w.se((int32_t) R(100) - 50); const uint32_t c = R(10) == 0 ? 300 : (uint32_t) R(5); w.ue(c); for (uint32_t i = 0; i < c && i < 300; ++i) w.se((int32_t) R(10) - 5); }
+    w.ue(R(10) == 0 ? 20 : (uint32_t) R(5)); w.u(1, R(2)); w.ue(R(240)); w.ue(R(135));
+    const bool frameOnly = R(4) != 0; w.u(1, frameOnly); if (!frameOnly) w.u(1, R(2));
+    w.u(1, R(2));
+    const bool crop = R(2); w.u(1, crop); if (crop) { w.ue(R(8)); w.ue(R(8)); w.ue(R(8)); w.ue(R(8)); }
+    const bool vui = R(3) != 0; w.u(1, vui);
+    if (vui) {
+        const bool ar = R(2); w.u(1, ar); if (ar) { const uint32_t idc = R(3) == 0 ? 255 : (uint32_t) R(17); w.u(8, idc); if (idc == 255) { w.u(16, R(65536)); w.u(16, R(65536)); } }
+        const bool os = R(2); w.u(1, os); if (os) w.u(1, R(2));
+        const bool vs = R(2); w.u(1, vs); if (vs) { w.u(3, R(8)); w.u(1, R(2)); const bool cd = R(2); w.u(1, cd); if (cd) w.u(24, R(1 << 24)); }
+        const bool cl = R(2); w.u(1, cl); if (cl) { w.ue(R(6)); w.ue(R(6)); }
+        const bool ti = R(2); w.u(1, ti); if (ti) { w.u(32, rng()); w.u(32, rng()); w.u(1, R(2)); }
+        const bool nh = R(4) == 0, vh = R(4) == 0;
+        w.u(1, nh); if (nh) hrd(w);
+        w.u(1, vh); if (vh) hrd(w);
+        if (nh || vh) w.u(1, R(2));
+        w.u(1, R(2));
+        const bool rs = R(2); w.u(1, rs);
+        if (rs) { w.u(1, R(2)); w.ue(R(4)); w.ue(R(4)); w.ue(R(17)); w.ue(R(17)); w.ue(R(3) ? (uint32_t) R(4) : 0); w.ue(R(17)); }
+    }
+    w.bit(1); while (w.n % 8) w.bit(0);
+    Bytes out = {0, 0, 0, 1, (uint8_t) (R(10) ? 0x67 : rng())};
+    const Bytes e = escape03(w.out);
+    out.insert(out.end(), e.begin(), e.end());
+    return out;
+}
+
+static Bytes randomNal() {
+    const uint8_t types[] = {1, 5, 6, 7, 8, 9, 0x21};
+    Bits w; w.ue(smallUe()); w.ue((uint32_t) R(12)); w.ue(R(4)); w.u(8, rng());
+    Bytes n = {(uint8_t) ((R(20) ? 0 : 0x80) | (R(4) << 5) | types[R(7)])};
+    n.insert(n.end(), w.out.begin(), w.out.end());
+    for (size_t i = 0, k = R(40); i < k; ++i) n.push_back((uint8_t) (R(3) ? 0 : rng()));
+    return n;
+}
+
+static void h264Diff(long iters) {
+    long before = failures, patched = 0;
+    for (long it = 0; it < iters; ++it) {
+        Bytes in = randomSps();
+        if (R(3)) mutate(in);
+        Bytes a, b;
+        const bool ra = nal::patchSpsLowLatency(in, a), rb = ref::nal::patchSpsLowLatency(in, b);
+        DIFF(ra == rb && (!ra || a == b), "h264 SPS", in);
+        patched += ra;
+        if (ra && it % 4 == 0) { Bytes again; DIFF(!nal::patchSpsLowLatency(a, again), "h264 SPS non idempotente", a); }
+    }
+    printf("SPS H.264: %ld input, %ld riscritti, differenze %ld\n", iters, patched, failures - before);
+    before = failures; long valid = 0;
+    for (long it = 0; it < iters; ++it) {
+        Bytes rec = {1, 0x64, 0, 0x1f, 0xff, (uint8_t) (0xE0 | R(4))};
+        const size_t ns = rec[5] & 0x1F;
+        for (size_t i = 0; i < ns; ++i) { Bytes n = randomNal(); if (i == 0 && R(4)) n[0] = 0x67; rec.push_back((uint8_t) (n.size() >> 8)); rec.push_back((uint8_t) n.size()); rec.insert(rec.end(), n.begin(), n.end()); }
+        const size_t np = R(4); rec.push_back((uint8_t) np);
+        for (size_t i = 0; i < np; ++i) { Bytes n = randomNal(); if (i == 0 && R(4)) n[0] = 0x68; rec.push_back((uint8_t) (n.size() >> 8)); rec.push_back((uint8_t) n.size()); rec.insert(rec.end(), n.begin(), n.end()); }
+        if (R(3)) mutate(rec);
+        Bytes s1, p1, s2, p2;
+        const bool ra = nal::parseAvcC(rec.data(), rec.size(), s1, p1), rb = ref::nal::parseAvcC(rec.data(), rec.size(), s2, p2);
+        DIFF(ra == rb && (!ra || (s1 == s2 && p1 == p2)), "h264 avcC", rec);
+        valid += ra;
+    }
+    printf("avcC:      %ld input, %ld validi, differenze %ld\n", iters, valid, failures - before);
+    before = failures; valid = 0;
+    for (long it = 0; it < iters; ++it) {
+        Bytes fr;
+        for (size_t i = 0, k = 1 + R(4); i < k; ++i) { Bytes n = randomNal(); const uint32_t l = (uint32_t) n.size(); fr.insert(fr.end(), {(uint8_t) (l >> 24), (uint8_t) (l >> 16), (uint8_t) (l >> 8), (uint8_t) l}); fr.insert(fr.end(), n.begin(), n.end()); }
+        if (R(3)) mutate(fr);
+        Bytes fa = fr, fb = fr;
+        bool ka = false, kb = false, ba = R(8) == 0, bb = ba;
+        const bool check = R(2);
+        const bool ra = nal::avccToAnnexB(fa.data(), fa.size(), ka, check ? &ba : nullptr);
+        const bool rb = ref::nal::avccToAnnexB(fb.data(), fb.size(), kb, check ? &bb : nullptr);
+        DIFF(ra == rb && fa == fb && (!ra || (ka == kb && ba == bb)), "h264 frame", fr);
+        if (!fr.empty()) { const size_t off = R(fr.size()); DIFF(nal::sliceIsB(fr.data() + off, fr.size() - off) == ref::nal::sliceIsB(fr.data() + off, fr.size() - off), "h264 slice B", fr); }
+        valid += ra;
+    }
+    printf("frame AVCC: %ld input, %ld validi, differenze %ld\n", iters, valid, failures - before);
+}
+
 int main(int argc, char** argv) {
     const long iters = argc > 1 ? std::atol(argv[1]) : 200000;
     plistDiff(iters);
     dmapDiff(iters);
     rtspDiff(iters);
     hlsDiff(iters / 2);
+    h264Diff(iters);
     if (failures) { printf("PARSER DIVERSI: %ld differenze\n", failures); return 1; }
     printf("parser Rust identici ai riferimenti C++\n");
     return 0;

@@ -1,13 +1,18 @@
 /*
+ * Versione C++ di riferimento, com'era nell'app prima del passaggio a Rust (fase 6).
+ * Non è compilata nell'app: serve solo a tools/hosttest/parser_diff.cpp.
+ */
+/*
  * sps_rewriter.cpp
  * Si lavora sull'RBSP (senza i byte 0x03 di "emulation prevention"): si legge l'SPS fino al
  * punto in cui inizia (o manca) la bitstream_restriction, si copiano quei bit invariati e si
  * riscrive la coda. Alla fine si reinseriscono gli 0x03 dove servono.
  * Tutte le letture sono controllate: un SPS anomalo fa fallire la riscrittura, mai la sessione.
  */
-#include "sps_rewriter.h"
 
-namespace irplay::nal {
+#include "reference.h"
+
+namespace ref::nal {
     namespace {
 
         std::vector<uint8_t> unescape(const uint8_t* p, size_t n) {
@@ -231,4 +236,4 @@ namespace irplay::nal {
         return r.ok() && sliceType % 5 == 1;
     }
 
-} // namespace irplay::nal
+} // namespace ref::nal

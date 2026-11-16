@@ -11,7 +11,7 @@
 #include <cstdint>
 
 namespace irplay {
-    inline constexpr uint32_t kRustAbiVersion = 5;
+    inline constexpr uint32_t kRustAbiVersion = 6;
 
     // Esiti di irplay_hevc_config (HEVC_CONFIG_* in lib.rs).
     inline constexpr int kHevcConfigInvalid = 0;
@@ -74,6 +74,12 @@ extern "C" {
     bool irplay_hls_remote_prefix_len(const uint8_t* location, size_t len, size_t* out);
     ByteList* irplay_hls_rewrite_master(const uint8_t* text, size_t len, const uint8_t* prefix, size_t prefix_len);
     ByteList* irplay_hls_expand_condensed(const uint8_t* text, size_t len);
+
+    // H.264 (rust/src/h264.rs).
+    bool irplay_h264_annexb(uint8_t* buf, size_t len, bool check_b, bool* keyframe, bool* b_slice);
+    ByteList* irplay_h264_parse_avcc(const uint8_t* data, size_t len);
+    ByteList* irplay_h264_patch_sps(const uint8_t* sps, size_t len);
+    bool irplay_h264_slice_is_b(const uint8_t* nal, size_t len);
 
     // Crittografia (rust/src/ffi_crypto.rs). Segreti e stati restano in Rust.
     bool irplay_random(uint8_t* buf, size_t len);

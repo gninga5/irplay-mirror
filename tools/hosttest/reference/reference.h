@@ -5,6 +5,7 @@
 #pragma once
 
 #include <optional>
+#include <vector>
 
 #include "hls_playlist.h"
 #include "now_playing.h"
@@ -27,6 +28,12 @@ namespace ref::hls {
     std::optional<irplay::hls::Master> rewriteMaster(std::string_view text, std::string_view remotePrefix);
     std::string toLocal(std::string_view remoteUri, std::string_view remotePrefix);
     std::optional<std::string> expandCondensed(std::string_view media);
+}
+namespace ref::nal {
+    bool avccToAnnexB(uint8_t* data, size_t len, bool& keyframe, bool* bSlice = nullptr);
+    bool parseAvcC(const uint8_t* data, size_t len, std::vector<uint8_t>& sps, std::vector<uint8_t>& pps);
+    bool patchSpsLowLatency(const std::vector<uint8_t>& in, std::vector<uint8_t>& out);
+    bool sliceIsB(const uint8_t* nal, size_t len);
 }
 namespace ref::rtsp {
     int parseRequest(std::vector<uint8_t>& buf, irplay::RtspRequest& req);

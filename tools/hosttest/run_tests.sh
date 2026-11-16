@@ -44,14 +44,11 @@ export PATH="$(dirname "$CARGO"):$PATH"   # i proxy di rustup cercano rustc nel 
 (cd "$RUSTDIR" && CARGO_TARGET_DIR="$OUT/rust-target" "$CARGO" build --release --locked -q)
 RUSTLIB="$OUT/rust-target/release/libirplay_core.a"
 
-# Decoder ALAC dell'app: FFmpeg compilato per il Mac con lo stesso script dell'app.
-FF="$OUT/ffmpeg"
-[ -f "$FF/lib/libavcodec.a" ] || FFMPEG_WORK="$ROOT/build/ffmpeg" "$ROOT/tools/build_ffmpeg.sh" host "$FF"
 SRC="$C/alac_decoder.cpp $C/now_playing.cpp $C/srp_server.cpp $C/sps_rewriter.cpp $C/airplay_server.cpp $C/airplay_media.cpp $C/hls_playlist.cpp $C/rtsp_message.cpp $C/airplay_info.cpp $C/airplay_crypto.cpp $C/media_streams.cpp $C/nal_parser.cpp $C/net_util.cpp $C/plist_reader.cpp $C/plist_writer.cpp"
 clang++ -std=c++20 -Wall -Wextra -Wformat=2 -Werror -Wno-missing-field-initializers \
   -fsanitize=address,undefined -fno-omit-frame-pointer -g -O1 \
-  -I"$C" -I"$P" -I"$M/include" -I"$SODIUM/include" -I"$FF/include" -I"$HERE/alac_enc" \
-  "$HERE/server_test.cpp" $SRC "$OUT"/pf_*.o "$OUT"/alacenc_*.o "$FF/lib/libavcodec.a" "$FF/lib/libavutil.a" "$RUSTLIB" "$OUT/mbed/library/libmbedcrypto.a" "$SODIUM/lib/libsodium.a" \
+  -I"$C" -I"$P" -I"$M/include" -I"$SODIUM/include" -I"$HERE/alac_enc" \
+  "$HERE/server_test.cpp" $SRC "$OUT"/pf_*.o "$OUT"/alacenc_*.o "$RUSTLIB" "$OUT/mbed/library/libmbedcrypto.a" "$SODIUM/lib/libsodium.a" \
   -o "$OUT/server_test"
 
 cd "$OUT"
@@ -79,3 +76,19 @@ for spec in "lowlat 1920 1080 0" "reorder 1920 1080 1" "uhd 3840 2160 0"; do
   "$OUT/rust-target/release/examples/hevc_check" "$HB/$1"
   "$HB/vt_hevc_check" "$HB/$1"
 done
+
+# Facoltativo: i test Rust anche su una TV collegata con adb, compilati per la sua CPU
+# (IRPLAY_TEST_DEVICE=192.168.1.10:5555). Verifica su ARM vero anche l'intercettazione
+# dei panic e il fuzzing.
+if [ -n "${IRPLAY_TEST_DEVICE:-}" ]; then
+  NDKBIN="${ANDROID_HOME:-$HOME/Library/Android/sdk}/ndk/28.2.13676358/toolchains/llvm/prebuilt/darwin-x86_64/bin"
+  case "$(adb -s "$IRPLAY_TEST_DEVICE" shell getprop ro.product.cpu.abi | tr -d '\r')" in
+    arm64-v8a) TGT=aarch64-linux-android; LNK="$NDKBIN/aarch64-linux-android28-clang"; VAR=CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER ;;
+    *)         TGT=armv7-linux-androideabi; LNK="$NDKBIN/armv7a-linux-androideabi28-clang"; VAR=CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_LINKER ;;
+  esac
+  BIN=$(cd "$RUSTDIR" && env "$VAR=$LNK" CARGO_TARGET_DIR="$OUT/rust-android" "$CARGO" test --release --locked --target "$TGT" --no-run --message-format=json 2>/dev/null \
+        | python3 -c 'import json,sys; print([j["executable"] for j in map(json.loads,sys.stdin) if j.get("executable") and j["target"]["name"]=="irplay_core"][0])')
+  adb -s "$IRPLAY_TEST_DEVICE" push "$BIN" /data/local/tmp/irplay_core_test >/dev/null
+  echo "test Rust su $IRPLAY_TEST_DEVICE ($TGT):"
+  adb -s "$IRPLAY_TEST_DEVICE" shell "chmod 755 /data/local/tmp/irplay_core_test && /data/local/tmp/irplay_core_test -q; rm -f /data/local/tmp/irplay_core_test" | grep -E "test result|FAILED|panicked"
+fi

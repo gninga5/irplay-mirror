@@ -23,12 +23,18 @@ Tabelle di risposta FairPlay (fairplay_tables.h)
   Copyright (C) 2018 Juho Vähä-Herttua, da UxPlay / RPiPlay.
   Licenza: GNU Lesser General Public License v2.1 o successiva.
 
-FFmpeg 9.0.2 (libavcodec e libavutil, solo il decoder Apple Lossless)
-  Copyright degli sviluppatori di FFmpeg (https://ffmpeg.org). Il decoder ALAC è
-  Copyright (c) 2005 David Hammerton. Non modificato, compilato da tools/build_ffmpeg.sh.
-  Licenza: GNU Lesser General Public License v2.1 o successiva. Il codice sorgente completo di
-  FFmpeg è su https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz; il codice dell'app, che serve
-  per ricollegarla a un FFmpeg modificato, è su GitHub.
+Symphonia 0.6.1 (symphonia-core, symphonia-common, symphonia-metadata, symphonia-codec-alac)
+  Copyright (c) 2019-2026 The Project Symphonia Developers. Decoder Apple Lossless scritto in
+  Rust. Non modificato. Licenza: Mozilla Public License 2.0 (https://mozilla.org/MPL/2.0/).
+  Codice sorgente: https://github.com/pdeljanov/Symphonia e https://crates.io/crates/symphonia-codec-alac.
+
+Libreria standard di Rust e librerie bitflags, bytemuck, lazy_static, log, num-complex,
+num-traits, smallvec (usate da Symphonia)
+  Copyright degli sviluppatori del progetto Rust e dei rispettivi autori.
+  Licenza: MIT o Apache License 2.0 (bytemuck anche Zlib); l'app le usa secondo la licenza
+  MIT: è concesso gratuitamente di usare il software senza restrizioni, a condizione di
+  includere l'avviso di copyright e questo permesso. IL SOFTWARE È FORNITO "COSÌ COM'È",
+  SENZA GARANZIE DI ALCUN TIPO.
 
 Mbed TLS 3.6
   Copyright The Mbed TLS Contributors.

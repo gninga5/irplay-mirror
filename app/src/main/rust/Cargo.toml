@@ -13,10 +13,14 @@ publish = false
 crate-type = ["staticlib", "rlib"]
 
 [dependencies]
+# Decoder ALAC scritto interamente in Rust (MPL-2.0): sostituisce FFmpeg.
+symphonia-core = { version = "=0.6.1", default-features = false }
+symphonia-codec-alac = { version = "=0.6.1", default-features = false }
 
 [profile.release]
-# Un panic non deve mai attraversare il confine con il C++: si chiude il processo.
-panic = "abort"
+# I panic si intercettano al confine con il C++ (guard in lib.rs): un pacchetto malevolo
+# fa perdere quel pacchetto, non chiude l'app.
+panic = "unwind"
 lto = true
 codegen-units = 1
 opt-level = 3
@@ -24,4 +28,4 @@ debug = false
 strip = "debuginfo"
 
 [profile.dev]
-panic = "abort"
+panic = "unwind"

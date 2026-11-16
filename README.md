@@ -145,9 +145,13 @@ else an evening:
   Apple Music answers 400 to `dacp.playingtime`, but it does accept `beginff`/`playresume`.
 - Apple's reference ALAC decoder trusts the sample count written in each packet, and it reads
   its own config byte-swapped on ARM. I patched both, then found out it has known CVEs that
-  were never fixed upstream (the repository has been frozen since 2012), so the app now uses
-  FFmpeg's ALAC decoder instead, built with nothing else by `tools/build_ffmpeg.sh`. Apple's
-  encoder is still in `tools/hosttest` to generate test packets.
+  were never fixed upstream (the repository has been frozen since 2012). The app moved to
+  FFmpeg's decoder, and now to [Symphonia](https://github.com/pdeljanov/Symphonia)'s, written
+  in Rust with no `unsafe` code: over a million packets from Apple's reference encoder, eight
+  kinds of signal, full and partial frames, it matches the original audio bit for bit, exactly
+  like FFmpeg did. Apple's encoder is still in `tools/hosttest` to generate test packets.
+- The Rust side catches its own panics at the C boundary (`guard` in `lib.rs`): a packet that
+  trips a bug in a library costs that packet, not the app.
 
 The key derivation chain is described at the top of `airplay_crypto.h`.
 
@@ -192,7 +196,7 @@ on understanding the protocol made all of this possible. The FairPlay part uses 
 (GPL-3) and reply tables by Juho Vähä-Herttua (LGPL-2.1+). Crypto comes from
 [Mbed TLS](https://github.com/Mbed-TLS/mbedtls) (Apache-2.0) and
 [libsodium](https://libsodium.org) (ISC), Apple Lossless audio from
-[FFmpeg](https://ffmpeg.org)'s ALAC decoder (LGPL-2.1+), and the icons from Google's
+[Symphonia](https://github.com/pdeljanov/Symphonia)'s ALAC decoder (MPL-2.0), and the icons from Google's
 Material Icons (Apache-2.0). The full notices are in the app, under *Licenses*.
 
 iRPlay Mirror is an independent project and isn't affiliated with or endorsed by Apple Inc.

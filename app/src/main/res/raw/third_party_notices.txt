@@ -23,12 +23,18 @@ FairPlay reply tables (fairplay_tables.h)
   Copyright (C) 2018 Juho Vähä-Herttua, from UxPlay / RPiPlay.
   License: GNU Lesser General Public License v2.1 or later.
 
-FFmpeg 9.0.2 (libavcodec and libavutil, only the Apple Lossless decoder)
-  Copyright the FFmpeg developers (https://ffmpeg.org). The ALAC decoder is
-  Copyright (c) 2005 David Hammerton. Unmodified, built by tools/build_ffmpeg.sh.
-  License: GNU Lesser General Public License v2.1 or later. The full source code of FFmpeg is
-  at https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz; the app's own source code, needed to
-  relink it against a modified FFmpeg, is on GitHub.
+Symphonia 0.6.1 (symphonia-core, symphonia-common, symphonia-metadata, symphonia-codec-alac)
+  Copyright (c) 2019-2026 The Project Symphonia Developers. Apple Lossless decoder, written in
+  Rust. Unmodified. License: Mozilla Public License 2.0 (https://mozilla.org/MPL/2.0/).
+  Source code: https://github.com/pdeljanov/Symphonia and https://crates.io/crates/symphonia-codec-alac.
+
+Rust standard library and crates bitflags, bytemuck, lazy_static, log, num-complex,
+num-traits, smallvec (used by Symphonia)
+  Copyright the Rust Project Developers and the respective authors.
+  License: MIT or Apache License 2.0 (bytemuck also Zlib); the app uses them under the
+  MIT License: permission is granted, free of charge, to deal in the software without
+  restriction, provided the copyright notice and this permission notice are included.
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.
 
 Mbed TLS 3.6
   Copyright The Mbed TLS Contributors.

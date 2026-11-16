@@ -558,7 +558,7 @@ static void testMusic(const ReceiverInfo& info, const uint8_t seed[32], const ui
     close(ph.fd); close(us); close(ctl);
     server.stop();
 
-    // 6) decoder ALAC dell'app (FFmpeg) da solo: senza perdita, limiti, fuzzing
+    // 6) decoder ALAC dell'app (Rust, Symphonia) da solo: senza perdita, limiti, fuzzing
     irplay::AlacDecoder dec;
     CHECK(dec.init());
     {

@@ -2,15 +2,14 @@
  * alac_decoder.h
  * Scopo: decodifica dei pacchetti Apple Lossless (ALAC) dell'audio AirPlay "solo musica".
  *
- * Usa il decoder di FFmpeg (libavcodec, LGPL-2.1+), compilato con il solo decoder ALAC da
- * tools/build_ffmpeg.sh. Sostituisce il decoder di riferimento di Apple, fermo dal 2012 e con
- * vulnerabilità note mai corrette (CVE-2021-0674, CVE-2021-0675, CVE-2021-30351).
+ * Involucro C++ del decoder in Rust (app/src/main/rust/src/alac.rs), basato su Symphonia:
+ * scritto interamente in Rust senza codice unsafe, verificato bit per bit contro l'encoder
+ * di riferimento di Apple (tools/hosttest). Ha preso il posto di FFmpeg, che a sua volta
+ * aveva sostituito il decoder di Apple (fermo dal 2012, con CVE-2021-0674, CVE-2021-0675 e
+ * CVE-2021-30351 mai corrette).
  *
- * AirPlay usa sempre la stessa configurazione, che iOS non invia nel SETUP (era nel campo
- * "fmtp" dell'ANNOUNCE di AirPlay 1): 352 campioni per pacchetto, 16 bit, stereo, 44,1 kHz
- * -> "96 352 0 16 40 10 14 2 255 0 0 44100". La configurazione è nostra, non arriva dalla
- * rete; il pacchetto invece sì: FFmpeg ne controlla i limiti, e qui si accettano solo frame
- * con al più kFrame campioni nel formato atteso.
+ * La configurazione AirPlay (352 campioni, 16 bit, stereo, 44,1 kHz) è fissa e sta nel
+ * modulo Rust; dalla rete arriva solo il pacchetto, di cui il decoder controlla i limiti.
  */
 #pragma once
 
@@ -18,9 +17,9 @@
 #include <cstdint>
 #include <vector>
 
-struct AVCodecContext;
-struct AVFrame;
-struct AVPacket;
+extern "C" {
+    struct AlacHandle;
+}
 
 namespace irplay {
 
@@ -41,9 +40,7 @@ namespace irplay {
         bool decode(const uint8_t* in, size_t len, std::vector<uint8_t>& out);
 
     private:
-        AVCodecContext* ctx_ = nullptr;
-        AVFrame* frame_ = nullptr;
-        AVPacket* packet_ = nullptr;
+        AlacHandle* handle_ = nullptr;
     };
 
 } // namespace irplay

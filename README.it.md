@@ -154,9 +154,13 @@ altro risparmiano una serata.
 - Il decoder ALAC di riferimento di Apple si fida del numero di campioni scritto in ogni
   pacchetto, e su ARM legge la propria configurazione con i byte al contrario. Li avevo
   corretti entrambi, poi ho scoperto che ha vulnerabilità note mai sistemate (il repository è
-  fermo dal 2012): ora l'app usa il decoder ALAC di FFmpeg, compilato da solo con
-  `tools/build_ffmpeg.sh`. L'encoder di Apple resta in `tools/hosttest` per generare i
-  pacchetti dei test.
+  fermo dal 2012). L'app è passata al decoder di FFmpeg, e ora a quello di
+  [Symphonia](https://github.com/pdeljanov/Symphonia), scritto in Rust senza codice `unsafe`:
+  su oltre un milione di pacchetti dell'encoder di riferimento di Apple, otto tipi di segnale,
+  frame interi e parziali, coincide bit per bit con l'audio originale, esattamente come FFmpeg.
+  L'encoder di Apple resta in `tools/hosttest` per generare i pacchetti dei test.
+- La parte in Rust intercetta i propri panic al confine con il C (`guard` in `lib.rs`): un
+  pacchetto che fa inciampare una libreria costa quel pacchetto, non l'app.
 
 La catena con cui vengono ricavate le chiavi è descritta in cima a `airplay_crypto.h`.
 
@@ -201,7 +205,7 @@ per capire il protocollo, niente di tutto questo sarebbe stato possibile. La par
 *playfair* (GPL-3) e le tabelle di risposta di Juho Vähä-Herttua (LGPL-2.1+). La crittografia
 viene da [Mbed TLS](https://github.com/Mbed-TLS/mbedtls) (Apache-2.0) e
 [libsodium](https://libsodium.org) (ISC), l'audio Apple Lossless dal decoder
-ALAC di [FFmpeg](https://ffmpeg.org) (LGPL-2.1+) e le icone dalle Material Icons
+ALAC di [Symphonia](https://github.com/pdeljanov/Symphonia) (MPL-2.0) e le icone dalle Material Icons
 di Google (Apache-2.0). Gli avvisi completi sono nell'app, alla voce *Licenze*.
 
 iRPlay Mirror è un progetto indipendente, non affiliato ad Apple Inc. né da essa approvato.

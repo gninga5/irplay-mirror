@@ -3,6 +3,7 @@
  * Scopo: dichiarazioni delle funzioni del componente Rust (app/src/main/rust), libreria
  * statica collegata dentro libirplay_native.so. Ogni funzione qui deve corrispondere a una
  * `extern "C"` in Rust; kRustAbiVersion va aumentata insieme a ABI_VERSION in lib.rs.
+ * Nessuna di queste funzioni lascia uscire un panic: in Rust diventa un valore di errore.
  */
 #pragma once
 
@@ -10,7 +11,7 @@
 #include <cstdint>
 
 namespace irplay {
-    inline constexpr uint32_t kRustAbiVersion = 2;
+    inline constexpr uint32_t kRustAbiVersion = 3;
 
     // Esiti di irplay_hevc_config (HEVC_CONFIG_* in lib.rs).
     inline constexpr int kHevcConfigInvalid = 0;
@@ -19,7 +20,16 @@ namespace irplay {
 }
 
 extern "C" {
+    struct AlacHandle;
+
     uint32_t irplay_rust_abi_version();
+
+    // ALAC (rust/src/alac.rs, Symphonia): decoder AirPlay 352 campioni, 16 bit, stereo.
+    // out_cap >= 704 campioni i16; out_frames = campioni per canale. Un handle per thread.
+    AlacHandle* irplay_alac_new();
+    bool irplay_alac_decode(AlacHandle* handle, const uint8_t* input, size_t len,
+                            int16_t* out, size_t out_cap, size_t* out_frames);
+    void irplay_alac_free(AlacHandle* handle);
 
     // HEVC (rust/src/hevc.rs): configurazione "hvc1" di iOS -> VPS/SPS/PPS Annex-B per csd-0,
     // VPS/SPS riscritti per bassa latenza se richiesto.

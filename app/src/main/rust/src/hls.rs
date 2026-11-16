@@ -4,7 +4,7 @@
 //! sull'iPhone e arrivano una alla volta (FCUP). Qui:
 //! - nella master playlist gli URI delle media playlist con il prefisso remoto diventano
 //!   locali ([`LOCAL_PREFIX`]), serviti dalla memoria dal lettore di Kotlin;
-//! - nelle media playlist di YouTube si espande #YT-EXT-CONDENSED-URL ("s/<v1>/<v2>/...").
+//! - nelle media playlist di YouTube si espande #YT-EXT-CONDENSED-URL (`s/<v1>/<v2>/...`).
 //!
 //! Testo di rete trattato come byte (non necessariamente UTF-8), con limiti su righe, URI e
 //! dimensione del risultato. Stesso comportamento della versione C++ precedente.

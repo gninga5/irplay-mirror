@@ -86,15 +86,19 @@ left comes from the TV's own image processing, and Game mode turns it off.
 
 ## How it works
 
-The TV speaks the same protocol an Apple TV does. Networking and crypto live in C++
-(`app/src/main/cpp`), the Android side is Kotlin (`app/src/main/java`).
+The TV speaks the same protocol an Apple TV does. Three layers: Kotlin for Android
+(`app/src/main/java`), a C++ shell for sockets, threads and protocol flow (`app/src/main/cpp`),
+and a Rust core for everything that reads bytes sent by the phone, plus all the cryptography
+(`app/src/main/rust`). The C++ side only ever sees values Rust has already checked.
 
 ```
 Kotlin   MainActivity (SurfaceView, remote)   AirPlayService (foreground service, mDNS)
            CodecManager (MediaCodec)             AudioRenderer (AudioTrack)
               ▲ JNI
-C++      RTSP server · pairing (Ed25519/X25519) · PIN (SRP-6a) · FairPlay handshake
-         AES-CTR video / AES-CBC audio · H.264 AVCC → Annex-B · SPS rewrite · ALAC · 3 s watchdog
+C++      RTSP server · sessions · sockets and threads · FairPlay (playfair) · 3 s watchdog
+              ▲ C ABI (rust_core.h, versioned; no panic crosses it)
+Rust     plist · RTSP/HTTP · DMAP · HLS · H.264/HEVC (SPS/VPS rewrite) · ALAC (Symphonia)
+         RTP reorder buffer · pairing, PIN (SRP-6a), keys · AES-CTR/CBC (ARMv8 instructions)
 ```
 
 Some things took me a while to figure out, so I'll leave them here in case they save someone
@@ -190,11 +194,20 @@ release build falls back to the debug key.
 
 ### Tests
 
-`tools/hosttest/run_tests.sh` runs the Rust tests, then builds the native engine for macOS with AddressSanitizer and
-UBSan and runs it against a fake iPhone: pairing and PIN, FairPlay, encrypted video and audio,
-lossless ALAC round trips, the watchdog, malformed requests, and a few hundred thousand fuzzed
-plists, SPS and ALAC packets. There's also a client that talks to the app running in the TV
-emulator, described in `tools/hosttest/README.md`.
+`tools/hosttest/run_tests.sh` runs, in order:
+- the Rust unit tests (test vectors, fuzzing);
+- the native engine built for macOS with AddressSanitizer and UBSan against a fake iPhone:
+  pairing and PIN, FairPlay, encrypted video and audio, lossless ALAC round trips, the
+  watchdog, malformed requests;
+- `parser_diff`: every Rust parser against the C++ it replaced, on generated and corrupted
+  input; `crypto_diff`: our crypto against libsodium and Mbed TLS; `srp_stress`: PIN pairings
+  against an independent Python client;
+- VideoToolbox decoding the rewritten H.264 and HEVC parameters;
+- with `IRPLAY_TEST_DEVICE=<ip>:5555`, the Rust tests again on a real TV through adb (32-bit
+  ARM there, hardware AES included).
+
+There's also a client that talks to the app running in the TV emulator, described in
+`tools/hosttest/README.md`.
 
 ## Credits and license
 

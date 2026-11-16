@@ -4,8 +4,6 @@
  */
 #include "rtsp_message.h"
 
-#include <cctype>
-
 #include <cerrno>
 #include <chrono>
 #include <cstring>

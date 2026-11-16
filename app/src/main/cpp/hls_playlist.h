@@ -11,8 +11,8 @@
  *    segmento è scritto in forma abbreviata ("s/<v1>/<v2>/...") invece dell'URL completo.
  * I segmenti video restano indirizzi https di YouTube, scaricati direttamente dal lettore.
  *
- * Il testo arriva dalla rete: funzioni pure, senza puntatori grezzi, con limiti espliciti
- * su numero di URI, lunghezza delle righe e dimensione del risultato.
+ * Il testo arriva dalla rete: lo esamina Rust (rust/src/hls.rs), con limiti espliciti su
+ * numero di URI, lunghezza delle righe e dimensione del risultato.
  */
 #pragma once
 
@@ -27,9 +27,7 @@ namespace irplay::hls {
     inline constexpr std::string_view kLocalPrefix = "irplay-hls://local";
     inline constexpr std::string_view kLocalMaster = "irplay-hls://local/master.m3u8";
 
-    inline constexpr size_t kMaxMediaPlaylists = 48;   // varianti video + tracce audio/sottotitoli
-    inline constexpr size_t kMaxUriBytes = 4096;
-    inline constexpr size_t kMaxOutputBytes = 16 * 1024 * 1024;
+    // Limiti (URI, playlist, dimensione del risultato): in rust/src/hls.rs.
 
     /** Testo che inizia con "#EXTM3U", senza byte NUL. */
     bool isPlaylist(std::string_view text);

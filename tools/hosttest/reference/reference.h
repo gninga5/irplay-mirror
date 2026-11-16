@@ -22,6 +22,9 @@ namespace ref::nowplaying {
     bool parseProgress(const uint8_t* data, size_t len, int64_t& positionMs, int64_t& durationMs);
 }
 namespace ref::hls {
+    inline constexpr size_t kMaxMediaPlaylists = 48;
+    inline constexpr size_t kMaxUriBytes = 4096;
+    inline constexpr size_t kMaxOutputBytes = 16 * 1024 * 1024;
     bool isPlaylist(std::string_view text);
     bool isSafeHttpUrl(std::string_view url);
     std::optional<std::string> remotePrefixOf(std::string_view location);

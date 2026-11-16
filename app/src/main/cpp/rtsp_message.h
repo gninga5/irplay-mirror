@@ -31,6 +31,8 @@ namespace irplay {
 
     namespace rtsp {
 
+        // Limiti applicati dal parser Rust (rust/src/rtsp.rs, stessi valori); qui servono per
+        // dimensionare il buffer di ricezione.
         constexpr size_t kMaxHeaderBytes = 16 * 1024;
         constexpr size_t kMaxBodyBytes   = 64 * 1024;          // fp-setup = 164 B, i plist di SETUP pesano pochi KB
         constexpr size_t kMaxArtworkBytes = 2 * 1024 * 1024;   // SET_PARAMETER con la copertina dell'album

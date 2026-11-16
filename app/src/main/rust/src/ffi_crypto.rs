@@ -1,7 +1,7 @@
 //! Interfaccia C della crittografia (dichiarata in rust_core.h). Le chiavi e gli stati
 //! restano in memoria di Rust dietro handle opachi; il C++ riceve solo i risultati
 //! (chiavi pubbliche, messaggi cifrati) e libera ogni handle con la funzione `_free`.
-//! Nessun panic esce di qui ([`crate::guard`]).
+//! Nessun panic esce di qui ((`guard` in lib.rs)).
 
 use crate::aes128::{Cbc, Ctr};
 use crate::guard;
@@ -51,16 +51,6 @@ unsafe fn write<const N: usize>(p: *mut u8, v: &[u8; N]) -> bool {
     // SAFETY: contratto della funzione.
     unsafe { std::ptr::copy_nonoverlapping(v.as_ptr(), p, N) };
     true
-}
-
-/// Riempie `buf` di byte casuali del kernel.
-///
-/// # Safety
-/// `buf` deve puntare a `len` byte scrivibili.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn irplay_random(buf: *mut u8, len: usize) -> bool {
-    // SAFETY: contratto della funzione.
-    unsafe { output(buf, len) }.is_some_and(|b| guard(false, || pairing::random(b)))
 }
 
 /// Intero casuale uniforme in [0, n).

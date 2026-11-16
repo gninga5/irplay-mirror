@@ -21,7 +21,6 @@
 #include <cctype>
 #include <cerrno>
 #include <cmath>
-#include <cstdlib>
 #include <cstring>
 #include <netinet/tcp.h>
 #include <poll.h>

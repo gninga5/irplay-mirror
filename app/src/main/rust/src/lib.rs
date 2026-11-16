@@ -1,9 +1,17 @@
-//! Componente Rust di iRPlay.
+//! Componente Rust di iRPlay: tutto ciò che legge byte mandati dal telefono e tutta la
+//! crittografia. Il C++ (socket, thread, flusso del protocollo) vede solo valori già controllati.
+//!
+//! Moduli:
+//! - parser: [`plist`], [`rtsp`], [`dmap`], [`hls`], [`h264`], [`hevc`], [`rtp`] (+ [`text`]);
+//! - audio: [`alac`] (Symphonia);
+//! - crittografia: [`pairing`] (Ed25519, X25519, PIN, chiavi), [`srp`], [`aes128`];
+//! - interfaccia C: questo file, [`ffi`], [`ffi_crypto`].
 //!
 //! Interfaccia verso il C++: solo funzioni `extern "C"` con tipi semplici, dichiarate in
-//! `app/src/main/cpp/rust_core.h`. Il codice `unsafe` sta solo in questa interfaccia.
+//! `app/src/main/cpp/rust_core.h`. Il codice `unsafe` sta solo in questa interfaccia e nel
+//! motore AES con le istruzioni ARMv8 (`aes128::arm`, assembly inline).
 //!
-//! Nessun panic la attraversa: ogni funzione esportata lo intercetta con [`guard`] e lo
+//! Nessun panic la attraversa: ogni funzione esportata lo intercetta con `guard` e lo
 //! trasforma in un errore. Un pacchetto malevolo che facesse cadere in errore una libreria
 //! fa perdere quel pacchetto, non chiude l'app (e Rust chiuderebbe comunque il processo,
 //! invece di proseguire in uno stato indefinito, se un panic provasse a uscire nel C++).

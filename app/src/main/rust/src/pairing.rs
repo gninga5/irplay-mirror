@@ -8,7 +8,7 @@
 //!    SHA-512("Pair-Verify-AES-Key" | "Pair-Verify-AES-IV" || S)[0..16].
 //! 3. fp-setup: FairPlay (resta in C, playfair).
 //! 4. SETUP: K = SHA-512(FairPlay(ekey) || S)[0..16].
-//! 5. Video: AES-128-CTR, chiave/IV = SHA-512("AirPlayStreamKey<id>" | "AirPlayStreamIV<id>" || K)[0..16].
+//! 5. Video: AES-128-CTR, chiave/IV = `SHA-512("AirPlayStreamKey<id>" | "AirPlayStreamIV<id>" || K)[0..16]`.
 //! 6. Audio: AES-128-CBC con chiave K e IV "eiv", ripartito a ogni pacchetto.
 //!
 //! Pairing con PIN: SRP-6a ([`crate::srp`]), poi AES-GCM (IV di 16 byte, ultimo byte
@@ -160,7 +160,7 @@ impl Pairing {
         true
     }
 
-    /// POST /pair-verify, fase 1 (body[0] == 1): pk X25519 nostra (32) + firma cifrata (64).
+    /// POST /pair-verify, fase 1 (`body[0] == 1`): pk X25519 nostra (32) + firma cifrata (64).
     /// Accettata anche senza pair-setup: iOS che ha già associato la TV parte da qui
     /// (iOS 27.2); l'autenticazione vera è la firma della fase 2.
     pub fn verify_step1(&mut self, id: &Identity, body: &[u8]) -> Option<[u8; 96]> {
@@ -200,7 +200,7 @@ impl Pairing {
         Some(out)
     }
 
-    /// POST /pair-verify, fase 2 (body[0] == 0): verifica la firma del client.
+    /// POST /pair-verify, fase 2 (`body[0] == 0`): verifica la firma del client.
     pub fn verify_step2(&mut self, body: &[u8]) -> bool {
         if self.state != State::Step1Done || body.len() != 4 + 64 || body[0] != 0 {
             return false;

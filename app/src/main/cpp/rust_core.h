@@ -95,7 +95,6 @@ extern "C" {
     bool irplay_reorder_stats(IrplayReorder* h, size_t* buffered, uint64_t* lost, uint64_t* resend);
 
     // Crittografia (rust/src/ffi_crypto.rs). Segreti e stati restano in Rust.
-    bool irplay_random(uint8_t* buf, size_t len);
     bool irplay_random_below(uint32_t n, uint32_t* out);
     void irplay_secure_zero(uint8_t* p, size_t len);
     bool irplay_ct_equal(const uint8_t* a, const uint8_t* b, size_t len);

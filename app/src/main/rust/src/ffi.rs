@@ -1,7 +1,7 @@
 //! Interfaccia C dei parser (plist, DMAP, RTSP, HLS), dichiarata in rust_core.h.
 //!
 //! Regole comuni: un puntatore nullo con lunghezza 0 è un input vuoto; nullo con
-//! lunghezza > 0 è un errore. Nessun panic esce di qui ([`crate::guard`]). I risultati
+//! lunghezza > 0 è un errore. Nessun panic esce di qui ((`guard` in lib.rs)). I risultati
 //! sono posizioni nel buffer del chiamante (RTSP, DMAP, prefissi HLS) oppure memoria di
 //! Rust raggiungibile solo da handle opachi, letti con funzioni che controllano i limiti
 //! e liberati con la funzione `_free` corrispondente.
@@ -365,7 +365,7 @@ pub unsafe extern "C" fn irplay_hls_rewrite_master(text: *const u8, len: usize, 
     }))
 }
 
-/// Media playlist con #YT-EXT-CONDENSED-URL espanso: [testo]; null se malformata.
+/// Media playlist con #YT-EXT-CONDENSED-URL espanso: `[testo]`; null se malformata.
 ///
 /// # Safety
 /// `text` deve puntare a `len` byte leggibili.
@@ -409,7 +409,7 @@ pub unsafe extern "C" fn irplay_h264_parse_avcc(data: *const u8, len: usize) -> 
     into_list(guard(None, || crate::h264::parse_avcc(d).map(|(s, p)| vec![s, p])))
 }
 
-/// SPS riscritto per bassa latenza: [SPS]; null se non serve o non è possibile.
+/// SPS riscritto per bassa latenza: `[SPS]`; null se non serve o non è possibile.
 ///
 /// # Safety
 /// `sps` deve puntare a `len` byte leggibili.

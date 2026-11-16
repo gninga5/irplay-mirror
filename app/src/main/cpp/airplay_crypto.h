@@ -34,7 +34,6 @@
 #include "rust_core.h"
 
 namespace irplay::srp {
-    constexpr size_t kSessionKeySize = 40;   // 2 x SHA-1 (variante Apple)
     constexpr size_t kProofSize = 20;        // SHA-1
 }
 
